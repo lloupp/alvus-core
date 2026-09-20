@@ -91,3 +91,27 @@ func TestTargetURLAvoidsDoubleV1(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestModelDefaultsApplyWithoutOverridingClient(t *testing.T) {
+	body := []byte(`{"model":"quality","messages":[],"reasoning_effort":"low"}`)
+	patched, err := patchModelRequest(body, "z-ai/glm-5-3", map[string]any{
+		"reasoning_effort":     "max",
+		"chat_template_kwargs": map[string]any{"clear_thinking": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(patched, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "z-ai/glm-5-3" {
+		t.Fatalf("model=%v", got["model"])
+	}
+	if got["reasoning_effort"] != "low" {
+		t.Fatalf("client reasoning override lost: %v", got["reasoning_effort"])
+	}
+	if _, ok := got["chat_template_kwargs"]; !ok {
+		t.Fatal("model defaults were not applied")
+	}
+}

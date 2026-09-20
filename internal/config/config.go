@@ -45,8 +45,9 @@ type Provider struct {
 }
 
 type Model struct {
-	Provider      string `json:"provider"`
-	UpstreamModel string `json:"upstream_model"`
+	Provider      string         `json:"provider"`
+	UpstreamModel string         `json:"upstream_model"`
+	Params        map[string]any `json:"params,omitempty"`
 }
 
 type CircuitBreaker struct {

@@ -11,39 +11,71 @@
       "kind": "nvidia",
       "base_url": "https://integrate.api.nvidia.com/v1",
       "api_key_env": "NVIDIA_API_KEYS"
-    },
-    "openrouter": {
-      "kind": "openrouter",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEYS",
-      "headers": {
-        "HTTP-Referer": "https://github.com/lloupp/alvus-core",
-        "X-Title": "Alvus Core"
-      }
-    },
-    "groq": {
-      "kind": "groq",
-      "base_url": "https://api.groq.com/openai/v1",
-      "api_key_env": "GROQ_API_KEYS"
-    },
-    "together": {
-      "kind": "together",
-      "base_url": "https://api.together.xyz/v1",
-      "api_key_env": "TOGETHER_API_KEYS"
     }
   },
   "models": {
-    "kimi": {
+    "glm53": {
       "provider": "nvidia",
-      "upstream_model": "moonshotai/kimi-k3"
+      "upstream_model": "z-ai/glm-5-3",
+      "params": {
+        "reasoning_effort": "max",
+        "chat_template_kwargs": {
+          "clear_thinking": true
+        }
+      }
     },
-    "deepseek": {
+    "kimi_k3": {
       "provider": "nvidia",
-      "upstream_model": "deepseek-ai/deepseek-v4-flash-0731"
+      "upstream_model": "moonshotai/kimi-k3",
+      "params": {
+        "reasoning_effort": "max"
+      }
+    },
+    "nemotron_ultra": {
+      "provider": "nvidia",
+      "upstream_model": "nvidia/nemotron-3-ultra-550b-a55b",
+      "params": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    },
+    "nemotron_super": {
+      "provider": "nvidia",
+      "upstream_model": "nvidia/nemotron-3-super-120b-a12b",
+      "params": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    },
+    "glm53_flash": {
+      "provider": "nvidia",
+      "upstream_model": "z-ai/glm-5-3-flash",
+      "params": {
+        "reasoning_effort": "low",
+        "chat_template_kwargs": {
+          "clear_thinking": true
+        }
+      }
+    },
+    "nemotron_lightning": {
+      "provider": "nvidia",
+      "upstream_model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "params": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
     }
   },
   "routes": {
-    "auto": ["kimi", "deepseek"],
-    "default": ["kimi", "deepseek"]
+    "quality": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash", "nemotron_lightning"],
+    "coding": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash"],
+    "reasoning": ["nemotron_ultra", "glm53", "kimi_k3", "nemotron_super"],
+    "fast": ["glm53_flash", "nemotron_lightning", "nemotron_super"],
+    "vision": ["kimi_k3", "glm53_flash"],
+    "auto": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash", "nemotron_lightning"],
+    "default": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash", "nemotron_lightning"]
   }
 }

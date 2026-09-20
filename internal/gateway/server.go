@@ -293,7 +293,7 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 	if err != nil {
 		return nil, err
 	}
-	patched, err := swapModel(body, c.UpstreamModel)
+	patched, err := patchModelRequest(body, c.UpstreamModel, st.cfg.Models[c.Alias].Params)
 	if err != nil {
 		return nil, err
 	}
@@ -360,12 +360,17 @@ func readLimitedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byt
 	return body, nil
 }
 
-func swapModel(body []byte, model string) ([]byte, error) {
+func patchModelRequest(body []byte, model string, defaults map[string]any) ([]byte, error) {
 	var v map[string]any
 	if err := json.Unmarshal(body, &v); err != nil {
 		return nil, err
 	}
 	v["model"] = model
+	for key, value := range defaults {
+		if _, exists := v[key]; !exists {
+			v[key] = value
+		}
+	}
 	return json.Marshal(v)
 }
 
