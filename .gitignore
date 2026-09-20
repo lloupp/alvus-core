@@ -1,0 +1,6 @@
+/alvus-core
+*.log
+.env
+alvus.local.json
+coverage.out
+.DS_Store

@@ -1,0 +1,33 @@
+{
+  "listen": "127.0.0.1:3000",
+  "request_body_limit_bytes": 67108864,
+  "request_timeout": "300s",
+  "circuit_breaker": {
+    "failure_threshold": 3,
+    "cooldown": "60s"
+  },
+  "providers": {
+    "nvidia": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key_env": "NVIDIA_API_KEYS"
+    },
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEYS"
+    }
+  },
+  "models": {
+    "kimi": {
+      "provider": "nvidia",
+      "upstream_model": "moonshotai/kimi-k3"
+    },
+    "deepseek": {
+      "provider": "nvidia",
+      "upstream_model": "deepseek-ai/deepseek-v4-flash-0731"
+    }
+  },
+  "routes": {
+    "auto": ["kimi", "deepseek"],
+    "default": ["kimi", "deepseek"]
+  }
+}
