@@ -1,25 +1,23 @@
 # Alvus Core
 
-Alvus Core is a reliability-first local inference gateway. It presents an OpenAI-compatible endpoint to agents and IDEs while routing requests across models, providers, and API credentials behind the scenes.
+Alvus Core is a reliability-first local inference gateway for OpenAI-compatible providers. Agents and IDEs talk to one local endpoint while Alvus Core handles provider credentials, model aliases, fallback, circuit breaking and protocol translation.
 
-This repository is a clean redesign of the original Alvus idea. The first milestone focuses on correctness, security boundaries, model-level circuit breaking, explicit configuration precedence, bounded request memory, and testable routing.
+## Current capabilities
 
-## What already works
-
-- OpenAI-compatible `/v1/*` proxy for JSON requests that contain a `model`.
-- Model aliases and ordered fallback routes.
-- Multiple OpenAI-compatible providers.
-- Per-provider credential pools with round-robin selection.
-- Model-level circuit breakers separated from credential health.
-- 429/502/503/529 fallback behavior and `Retry-After` support.
-- 401 credential disable behavior.
-- Context-length errors skip only the incompatible model for that request.
-- SSE/chunked streaming passthrough.
-- Configurable request-body limit instead of unbounded `io.ReadAll`.
-- Optional proxy authentication.
-- `/healthz`, `/readyz`, `/metrics`, and `/v1/models`.
+- OpenAI-compatible `/v1/*` proxy with model rewriting.
+- Provider adapters for generic OpenAI, NVIDIA NIM, OpenRouter, Groq and Together.
+- Provider-specific error classification instead of treating key, model and provider failures as the same thing.
+- Per-provider credential pools with round-robin selection, cooldown and invalid-key disable.
+- Ordered model routes and model-level circuit breakers.
+- OpenAI SSE streaming passthrough.
+- Anthropic Messages compatibility at `POST /v1/messages` including text, tools, tool results, tool choice and SSE tool-call translation.
+- `POST /v1/messages/count_tokens` transport-level token estimate for Anthropic-compatible clients. It is intentionally not presented as tokenizer-exact because providers do not share one tokenizer.
+- Transactional hot reload: a new configuration is fully loaded and validated before an atomic state swap. Invalid reloads leave the previous runtime untouched, and in-flight requests continue on their captured state.
+- Request body limits, upstream timeouts, redirect refusal and hop-by-hop header filtering.
+- Optional proxy and admin authentication.
+- `/healthz`, `/readyz`, `/metrics` and `/v1/models`.
 - JSON structured logs.
-- `go test -race`, vet, format and build in CI.
+- Race-detector tests in CI.
 
 ## Configuration
 
@@ -29,11 +27,13 @@ Copy the example:
 cp config.example.json alvus.json
 ```
 
-Keep keys in environment variables, not in the JSON file:
+Keep credentials in environment variables, not in the JSON file:
 
 ```bash
 export NVIDIA_API_KEYS="nvapi-one,nvapi-two"
 export OPENROUTER_API_KEYS="sk-or-one"
+export GROQ_API_KEYS="gsk-one"
+export TOGETHER_API_KEYS="tg-one"
 ```
 
 Then run:
@@ -42,17 +42,23 @@ Then run:
 go run ./cmd/alvus-core -config alvus.json
 ```
 
-By default the example listens only on `127.0.0.1:3000`.
+By default the process watches the JSON file every second. Saving a valid configuration atomically replaces the routing state; saving an invalid configuration is rejected without disrupting the active state. Changing `listen` requires a restart because the listening socket itself cannot be atomically moved.
+
+Disable file watching with:
+
+```bash
+go run ./cmd/alvus-core -config alvus.json -watch=false
+```
 
 ### Precedence
 
-Configuration is deterministic and never mutates the process environment:
-
 ```text
-Environment variables > alvus.json > built-in defaults
+Environment variables > JSON configuration > built-in defaults
 ```
 
-Global overrides currently supported:
+Alvus Core never clears or rewrites the process environment while reloading.
+
+Global overrides:
 
 ```text
 ALVUS_CONFIG
@@ -63,36 +69,39 @@ ALVUS_BODY_LIMIT_BYTES
 ALVUS_REQUEST_TIMEOUT
 ```
 
-Provider keys are resolved through each provider's `api_key_env` field.
+Provider credentials are resolved through each provider's `api_key_env` field.
 
 ## Routes
 
-The example configuration exposes `auto`:
-
-```json
-"routes": {
-  "auto": ["kimi", "deepseek"]
-}
-```
-
-A client can therefore use:
+A route is an ordered list of model aliases:
 
 ```json
 {
-  "model": "auto",
-  "messages": [{"role":"user","content":"hello"}]
+  "routes": {
+    "auto": ["kimi", "deepseek"]
+  }
 }
 ```
 
-If `kimi` is rate-limited or temporarily unavailable, the router can move to `deepseek` without treating healthy API credentials as broken.
+A client can use `model: "auto"`. Capacity failures can move the request to the next model without marking healthy credentials as permanently bad.
 
-## Security model
+## Anthropic-compatible clients
 
-The default listen address is loopback. Set `ALVUS_PROXY_TOKEN` if clients should authenticate to `/v1/*`; the incoming token is never forwarded upstream. Provider credentials are injected only after routing.
+Point an Anthropic Messages client at the local server and send requests to:
 
-`/metrics` can be protected independently with `ALVUS_ADMIN_TOKEN`, supplied as `X-Alvus-Admin-Token`.
+```text
+POST http://127.0.0.1:3000/v1/messages
+```
 
-Do not expose an unauthenticated listener on an untrusted network.
+Alvus Core converts Anthropic message blocks/tools into OpenAI chat-completions format, routes the request, and translates the response back. Text streaming and streamed tool calls are translated into Anthropic SSE events.
+
+`/v1/messages/count_tokens` is a conservative size estimate rather than a provider tokenizer result. It exists to keep clients operational across heterogeneous upstreams; exact accounting should be added through provider tokenizer adapters when available.
+
+## Security
+
+The default listener is loopback. Set `ALVUS_PROXY_TOKEN` before exposing `/v1/*` outside a trusted host. Incoming client authorization is never forwarded as the provider credential; Alvus Core injects the selected provider key after routing.
+
+Protect `/metrics` with `ALVUS_ADMIN_TOKEN` when operational data should not be public.
 
 ## Development
 
@@ -100,35 +109,21 @@ Do not expose an unauthenticated listener on an untrusted network.
 gofmt -w .
 go vet ./...
 go test -race ./...
-go build ./cmd/alvus-core
+CGO_ENABLED=0 go build -trimpath -o alvus-core ./cmd/alvus-core
 ```
 
-Go version is defined once in `go.mod`; CI reads that same file.
+The Go version is defined once in `go.mod`; CI reads the same file.
 
 ## Architecture
 
 ```text
 client
   -> gateway
-     -> router / model circuit breaker
-        -> provider
-           -> credential pool
-              -> upstream OpenAI-compatible API
+      -> protocol adapter (OpenAI / Anthropic)
+      -> router / model circuit breaker
+          -> provider adapter
+              -> credential pool
+                  -> upstream provider
 ```
 
-The separation is intentional: model/provider capacity failures and credential failures are different facts and should not poison each other.
-
-## Next milestones
-
-- Provider adapters for NIM, OpenRouter, Groq and Together-specific error semantics.
-- Transactional hot reload with validation before atomic config swap.
-- Anthropic Messages API translation.
-- OpenAI Responses API normalization.
-- Prometheus/OpenTelemetry export.
-- Weighted and latency-aware routing.
-- Disk-backed replay for very large request bodies instead of keeping them entirely in RAM.
-- Release matrix with checksums and SBOM.
-
-## License
-
-MIT.
+The key design rule is that credential health, model capacity and provider health are separate facts.

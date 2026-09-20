@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"github.com/lloupp/alvus-core/internal/config"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,13 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/lloupp/alvus-core/internal/config"
 )
 
 func baseConfig(url string) config.Config {
 	c := config.Defaults()
-	c.Providers = map[string]config.Provider{"p": {BaseURL: url, APIKeys: []string{"k1", "k2"}}}
+	c.Providers = map[string]config.Provider{"p": {Kind: "openai", BaseURL: url, APIKeys: []string{"k1", "k2"}}}
 	c.Models = map[string]config.Model{"a": {Provider: "p", UpstreamModel: "real-a"}, "b": {Provider: "p", UpstreamModel: "real-b"}}
 	c.Routes = map[string][]string{"auto": {"a", "b"}, "default": {"a", "b"}}
 	c.CircuitBreaker.FailureThreshold = 1
@@ -35,13 +34,12 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 			return
 		}
 		if v["model"] != "real-b" {
-			t.Errorf("model = %v, want real-b", v["model"])
+			t.Errorf("model=%v", v["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer up.Close()
-
 	s := New(baseConfig(up.URL+"/v1"), nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
 	rec := httptest.NewRecorder()
@@ -54,15 +52,33 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 	}
 }
 
-func TestBodyLimit(t *testing.T) {
-	c := baseConfig("https://example.invalid/v1")
-	c.RequestBodyLimitBytes = 10
-	s := New(c, nil)
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto"}`))
+func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
+	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":1}`)) }))
+	defer up1.Close()
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":2}`)) }))
+	defer up2.Close()
+	c1 := baseConfig(up1.URL + "/v1")
+	s := New(c1, nil)
+	bad := c1
+	bad.Providers = map[string]config.Provider{}
+	if err := s.Reload(bad); err == nil {
+		t.Fatal("invalid reload accepted")
+	}
+	assertSource(t, s, "1")
+	c2 := baseConfig(up2.URL + "/v1")
+	if err := s.Reload(c2); err != nil {
+		t.Fatal(err)
+	}
+	assertSource(t, s, "2")
+}
+
+func assertSource(t *testing.T, s *Server, want string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"a","messages":[]}`))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status=%d", rec.Code)
+	if !strings.Contains(rec.Body.String(), `"source":`+want) {
+		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
 

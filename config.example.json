@@ -8,12 +8,28 @@
   },
   "providers": {
     "nvidia": {
+      "kind": "nvidia",
       "base_url": "https://integrate.api.nvidia.com/v1",
       "api_key_env": "NVIDIA_API_KEYS"
     },
     "openrouter": {
+      "kind": "openrouter",
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "OPENROUTER_API_KEYS"
+      "api_key_env": "OPENROUTER_API_KEYS",
+      "headers": {
+        "HTTP-Referer": "https://github.com/lloupp/alvus-core",
+        "X-Title": "Alvus Core"
+      }
+    },
+    "groq": {
+      "kind": "groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key_env": "GROQ_API_KEYS"
+    },
+    "together": {
+      "kind": "together",
+      "base_url": "https://api.together.xyz/v1",
+      "api_key_env": "TOGETHER_API_KEYS"
     }
   },
   "models": {
