@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${NVIDIA_API_KEYS:?set NVIDIA_API_KEYS with comma-separated NVIDIA keys}"
-MODEL="${NVIDIA_E2E_MODEL:-meta/llama-3.1-8b-instruct}"
+MODEL="${NVIDIA_E2E_MODEL:-nvidia/nemotron-3-super-120b-a12b}"
 BASE="${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}"
 
 IFS=',' read -r -a KEYS <<< "$NVIDIA_API_KEYS"
@@ -30,7 +30,7 @@ def post(key,payload,stream=False):
         return e.code,int((time.time()-t)*1000),e.read(4096).decode('utf-8','replace')
 
 for i,key in enumerate(keys[:2],1):
-    status,ms,body=post(key,{"model":model,"messages":[{"role":"user","content":"Reply exactly ALVUS_OK"}],"max_tokens":16,"temperature":0})
+    status,ms,body=post(key,{"model":model,"messages":[{"role":"user","content":"Reply exactly ALVUS_OK"}],"max_tokens":64,"temperature":0})
     ok=False
     try:
         j=json.loads(body)
@@ -39,6 +39,6 @@ for i,key in enumerate(keys[:2],1):
         pass
     print(json.dumps({"key":i,"nonstream_status":status,"latency_ms":ms,"content_ok":ok}))
 
-    status,ms,body=post(key,{"model":model,"messages":[{"role":"user","content":"Reply exactly STREAM_OK"}],"max_tokens":16,"temperature":0,"stream":True},True)
+    status,ms,body=post(key,{"model":model,"messages":[{"role":"user","content":"Reply exactly STREAM_OK"}],"max_tokens":64,"temperature":0,"stream":True},True)
     print(json.dumps({"key":i,"stream_status":status,"latency_ms":ms,"sse":"data:" in body,"done":"[DONE]" in body,"content_ok":"STREAM_OK" in body}))
 PY

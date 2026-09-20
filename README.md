@@ -27,14 +27,13 @@ Copy the example:
 cp config.example.json alvus.json
 ```
 
-Keep credentials in environment variables, not in the JSON file:
+Keep credentials in environment variables, not in the JSON file. The default example is NVIDIA-only:
 
 ```bash
 export NVIDIA_API_KEYS="nvapi-one,nvapi-two"
-export OPENROUTER_API_KEYS="sk-or-one"
-export GROQ_API_KEYS="gsk-one"
-export TOGETHER_API_KEYS="tg-one"
 ```
+
+The gateway still supports OpenAI-compatible, OpenRouter, Groq and Together providers when you add them to your own configuration.
 
 Then run:
 
@@ -71,19 +70,19 @@ ALVUS_REQUEST_TIMEOUT
 
 Provider credentials are resolved through each provider's `api_key_env` field.
 
-## Routes
+## NVIDIA quality routes
 
-A route is an ordered list of model aliases:
+The default NVIDIA-only example exposes task-oriented routes:
 
-```json
-{
-  "routes": {
-    "auto": ["kimi", "deepseek"]
-  }
-}
-```
+- `quality` / `auto`: GLM-5.3 → Kimi-K3 → Nemotron 3 Ultra → Nemotron 3 Super → GLM-5.3 Flash → Nemotron 3.5 Lightning.
+- `coding`: GLM-5.3 → Kimi-K3 → Nemotron 3 Ultra → Nemotron 3 Super → GLM-5.3 Flash.
+- `reasoning`: Nemotron 3 Ultra → GLM-5.3 → Kimi-K3 → Nemotron 3 Super.
+- `fast`: GLM-5.3 Flash → Nemotron 3.5 Lightning → Nemotron 3 Super.
+- `vision`: Kimi-K3 → GLM-5.3 Flash.
 
-A client can use `model: "auto"`. Capacity failures can move the request to the next model without marking healthy credentials as permanently bad.
+Model entries can define `params`. These are applied as defaults after routing, while explicit client parameters win. This lets Alvus Core request a model's preferred reasoning mode without forcing Pi Agent, Claude-compatible clients or OpenAI-compatible clients to know provider-specific knobs.
+
+A client can simply use `model: "auto"`, `"coding"`, `"reasoning"`, `"fast"` or `"vision"`. Capacity and NVIDIA model-availability failures move to the next candidate without poisoning otherwise healthy credentials.
 
 ## Anthropic-compatible clients
 
@@ -107,7 +106,7 @@ export NVIDIA_API_KEYS="nvapi-first,nvapi-second"
 ./scripts/e2e-nvidia.sh
 ```
 
-The harness tests both keys independently with a non-streaming request and an SSE streaming request. It never prints or writes the keys. Override the model with `NVIDIA_E2E_MODEL` if needed.
+The harness tests both keys independently with a non-streaming request and an SSE streaming request. It never prints or writes the keys. Its default model is `nvidia/nemotron-3-super-120b-a12b`; override it with `NVIDIA_E2E_MODEL` if needed.
 
 
 ## Security

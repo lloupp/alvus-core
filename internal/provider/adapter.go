@@ -69,8 +69,8 @@ func (a openAIAdapter) Classify(status int, body []byte, h http.Header) Decision
 		}
 		return Decision{Action: Terminal, Reason: "bad request"}
 	case http.StatusNotFound:
-		if a.kind == "nvidia" && strings.Contains(lower, "not found for account") {
-			return Decision{Action: FallbackModel, Reason: "model unavailable for account"}
+		if a.kind == "nvidia" {
+			return Decision{Action: FallbackModel, Reason: "nvidia model or entitlement unavailable"}
 		}
 		return Decision{Action: Terminal, Reason: "not found"}
 	default:
