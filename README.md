@@ -97,6 +97,19 @@ Alvus Core converts Anthropic message blocks/tools into OpenAI chat-completions 
 
 `/v1/messages/count_tokens` is a conservative size estimate rather than a provider tokenizer result. It exists to keep clients operational across heterogeneous upstreams; exact accounting should be added through provider tokenizer adapters when available.
 
+
+## Live NVIDIA smoke test
+
+For a real credential and streaming check, keep temporary keys only in the environment:
+
+```bash
+export NVIDIA_API_KEYS="nvapi-first,nvapi-second"
+./scripts/e2e-nvidia.sh
+```
+
+The harness tests both keys independently with a non-streaming request and an SSE streaming request. It never prints or writes the keys. Override the model with `NVIDIA_E2E_MODEL` if needed.
+
+
 ## Security
 
 The default listener is loopback. Set `ALVUS_PROXY_TOKEN` before exposing `/v1/*` outside a trusted host. Incoming client authorization is never forwarded as the provider credential; Alvus Core injects the selected provider key after routing.
