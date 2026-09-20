@@ -104,5 +104,10 @@ func (r *Router) Snapshot(now time.Time) map[string]map[string]any {
 	for alias := range r.cfg.Models {
 		h := r.health[alias]
 		state := "closed"
-		if now.Before(h.openU[[
-HÂ‚BB\İ]HH›Ü[ˆ‚‚B_B‚B[İ]Ø[X\×HHX\Üİš[™×X[^Èœİ]Hˆİ]K›Ü[—İ[[ˆ›Ü[•[[›\İÜ™X\ÛÛˆˆ›\İ™X\ÛÛŸB‚_B‚\™]\›ˆİ]ŸB
+		if now.Before(h.openUntil) {
+			state = "open"
+		}
+		out[alias] = map[string]any{"state": state, "open_until": h.openUntil, "last_reason": h.lastReason}
+	}
+	return out
+}
