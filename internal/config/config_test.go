@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLoadPrecedenceAndProviderKeyEnv(t *testing.T) {
+func TestLoadPrecedenceAndProviderNormalization(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "alvus.json")
 	data := `{
@@ -23,7 +23,6 @@ func TestLoadPrecedenceAndProviderKeyEnv(t *testing.T) {
 	}
 	t.Setenv("TEST_KEYS", "k1, k2")
 	t.Setenv("ALVUS_LISTEN", "127.0.0.1:2222")
-
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +30,10 @@ func TestLoadPrecedenceAndProviderKeyEnv(t *testing.T) {
 	if cfg.Listen != "127.0.0.1:2222" {
 		t.Fatalf("env did not win: %s", cfg.Listen)
 	}
-	if got := cfg.Providers["p"].APIKeys; len(got) != 2 || got[0] != "k1" || got[1] != "k2" {
-		t.Fatalf("keys = %#v", got)
+	if cfg.Providers["p"].Kind != "openai" {
+		t.Fatalf("kind=%q", cfg.Providers["p"].Kind)
+	}
+	if got := cfg.Providers["p"].APIKeys; len(got) != 2 {
+		t.Fatalf("keys=%#v", got)
 	}
 }

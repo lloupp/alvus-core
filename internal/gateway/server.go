@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/lloupp/alvus-core/internal/config"
 	"github.com/lloupp/alvus-core/internal/credentials"
+	"github.com/lloupp/alvus-core/internal/provider"
 	"github.com/lloupp/alvus-core/internal/router"
 )
 
@@ -27,12 +29,18 @@ type Metrics struct {
 	Attempts  atomic.Uint64
 	Fallbacks atomic.Uint64
 	Errors    atomic.Uint64
+	Reloads   atomic.Uint64
+}
+
+type runtimeState struct {
+	cfg      config.Config
+	router   *router.Router
+	pools    map[string]*credentials.Pool
+	adapters map[string]provider.Adapter
 }
 
 type Server struct {
-	cfg          config.Config
-	router       *router.Router
-	pools        map[string]*credentials.Pool
+	state        atomic.Pointer[runtimeState]
 	client       *http.Client
 	streamClient *http.Client
 	log          *slog.Logger
@@ -44,10 +52,6 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	pools := make(map[string]*credentials.Pool, len(cfg.Providers))
-	for name, p := range cfg.Providers {
-		pools[name] = credentials.New(p.APIKeys)
-	}
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          128,
@@ -57,17 +61,49 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		ExpectContinueTimeout: time.Second,
 	}
 	s := &Server{
-		cfg:          cfg,
-		router:       router.New(cfg),
-		pools:        pools,
 		client:       &http.Client{Transport: transport, CheckRedirect: noRedirect},
 		streamClient: &http.Client{Transport: transport.Clone(), CheckRedirect: noRedirect},
 		log:          logger,
 		mux:          http.NewServeMux(),
 	}
+	st, err := buildState(cfg)
+	if err != nil {
+		panic(err)
+	}
+	s.state.Store(st)
 	s.routes()
 	return s
 }
+
+func buildState(cfg config.Config) (*runtimeState, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	pools := make(map[string]*credentials.Pool, len(cfg.Providers))
+	adapters := make(map[string]provider.Adapter, len(cfg.Providers))
+	for name, p := range cfg.Providers {
+		pools[name] = credentials.New(p.APIKeys)
+		adapters[name] = provider.New(p.Kind)
+	}
+	return &runtimeState{cfg: cfg, router: router.New(cfg), pools: pools, adapters: adapters}, nil
+}
+
+func (s *Server) Reload(cfg config.Config) error {
+	old := s.state.Load()
+	if old != nil && cfg.Listen != old.cfg.Listen {
+		return fmt.Errorf("listen address change requires restart: %s -> %s", old.cfg.Listen, cfg.Listen)
+	}
+	next, err := buildState(cfg)
+	if err != nil {
+		return err
+	}
+	s.state.Store(next)
+	s.metrics.Reloads.Add(1)
+	s.log.Info("configuration reloaded", "providers", len(cfg.Providers), "models", len(cfg.Models))
+	return nil
+}
+
+func (s *Server) Config() config.Config { return s.state.Load().cfg }
 
 var noRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
@@ -78,16 +114,20 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /readyz", s.ready)
 	s.mux.HandleFunc("GET /metrics", s.metricsHandler)
 	s.mux.HandleFunc("GET /v1/models", s.proxyAuth(s.models))
+	s.mux.HandleFunc("POST /v1/messages", s.proxyAuth(s.anthropicMessages))
+	s.mux.HandleFunc("POST /v1/messages/count_tokens", s.proxyAuth(s.anthropicCountTokens))
 	s.mux.Handle("/v1/", s.proxyAuth(http.HandlerFunc(s.proxy)))
 }
 
 func (s *Server) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
-	if s.cfg.ProxyToken == "" {
-		return next
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		st := s.state.Load()
+		if st.cfg.ProxyToken == "" {
+			next(w, r)
+			return
+		}
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if len(got) != len(s.cfg.ProxyToken) || subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.ProxyToken)) != 1 {
+		if len(got) != len(st.cfg.ProxyToken) || subtle.ConstantTimeCompare([]byte(got), []byte(st.cfg.ProxyToken)) != 1 {
 			http.Error(w, "alvus-core: unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -96,11 +136,12 @@ func (s *Server) proxyAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) adminAuth(r *http.Request) bool {
-	if s.cfg.AdminToken == "" {
+	st := s.state.Load()
+	if st.cfg.AdminToken == "" {
 		return true
 	}
 	got := r.Header.Get("X-Alvus-Admin-Token")
-	return len(got) == len(s.cfg.AdminToken) && subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminToken)) == 1
+	return len(got) == len(st.cfg.AdminToken) && subtle.ConstantTimeCompare([]byte(got), []byte(st.cfg.AdminToken)) == 1
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -108,10 +149,11 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	st := s.state.Load()
 	now := time.Now()
 	providers := map[string]int{}
 	ready := true
-	for name, p := range s.pools {
+	for name, p := range st.pools {
 		providers[name] = p.Available(now)
 		if p.Available(now) == 0 {
 			ready = false
@@ -131,21 +173,24 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "alvus-core: unauthorized", http.StatusUnauthorized)
 		return
 	}
+	st := s.state.Load()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"requests":          s.metrics.Requests.Load(),
 		"upstream_attempts": s.metrics.Attempts.Load(),
 		"fallbacks":         s.metrics.Fallbacks.Load(),
 		"errors":            s.metrics.Errors.Load(),
-		"circuits":          s.router.Snapshot(time.Now()),
+		"reloads":           s.metrics.Reloads.Load(),
+		"circuits":          st.router.Snapshot(time.Now()),
 	})
 }
 
 func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
-	data := make([]map[string]any, 0, len(s.cfg.Models)+len(s.cfg.Routes))
-	for name := range s.cfg.Models {
+	st := s.state.Load()
+	data := make([]map[string]any, 0, len(st.cfg.Models)+len(st.cfg.Routes))
+	for name := range st.cfg.Models {
 		data = append(data, map[string]any{"id": name, "object": "model", "owned_by": "alvus-core"})
 	}
-	for name := range s.cfg.Routes {
+	for name := range st.cfg.Routes {
 		if name != "default" {
 			data = append(data, map[string]any{"id": name, "object": "model", "owned_by": "alvus-core-router"})
 		}
@@ -159,8 +204,9 @@ type modelProbe struct {
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
+	st := s.state.Load()
 	s.metrics.Requests.Add(1)
-	body, err := readLimitedBody(w, r, s.cfg.RequestBodyLimitBytes)
+	body, err := readLimitedBody(w, r, st.cfg.RequestBodyLimitBytes)
 	if err != nil {
 		s.metrics.Errors.Add(1)
 		return
@@ -171,75 +217,79 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		s.metrics.Errors.Add(1)
 		return
 	}
-	candidates, err := s.router.Candidates(probe.Model, time.Now())
-	if err != nil || len(candidates) == 0 {
-		http.Error(w, "alvus-core: "+errString(err, "no healthy route"), http.StatusServiceUnavailable)
+	resp, err := s.routeRequest(st, r, r.URL.Path, body, probe.Stream, probe.Model)
+	if err != nil {
 		s.metrics.Errors.Add(1)
+		http.Error(w, "alvus-core: "+err.Error(), http.StatusServiceUnavailable)
 		return
+	}
+	s.copyResponse(w, resp, probe.Stream)
+}
+
+func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPath string, body []byte, stream bool, requestedModel string) (*http.Response, error) {
+	candidates, err := st.router.Candidates(requestedModel, time.Now())
+	if err != nil || len(candidates) == 0 {
+		return nil, fmt.Errorf("%s", errString(err, "no healthy route"))
 	}
 
 	for ci, candidate := range candidates {
 		if ci > 0 {
 			s.metrics.Fallbacks.Add(1)
 		}
-		pool := s.pools[candidate.Provider]
-		if pool == nil {
+		pool := st.pools[candidate.Provider]
+		adapter := st.adapters[candidate.Provider]
+		if pool == nil || adapter == nil {
 			continue
 		}
 		maxKeyAttempts := pool.Len()
-		if maxKeyAttempts < 1 {
-			continue
-		}
 		for keyAttempt := 0; keyAttempt < maxKeyAttempts; keyAttempt++ {
 			idx, key, err := pool.Next(time.Now())
 			if err != nil {
 				break
 			}
 			s.metrics.Attempts.Add(1)
-			resp, err := s.doAttempt(r, body, probe.Stream, candidate, key)
+			resp, err := s.doAttempt(st, original, targetPath, body, stream, candidate, key, adapter)
 			if err != nil {
 				pool.Cooldown(idx, time.Now().Add(5*time.Second))
 				s.log.Warn("upstream request failed", "provider", candidate.Provider, "model", candidate.Alias, "error", err)
 				continue
 			}
 			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-				s.router.Success(candidate.Alias)
-				s.copyResponse(w, resp, probe.Stream)
-				return
+				st.router.Success(candidate.Alias)
+				return resp, nil
 			}
 
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 			resp.Body.Close()
-			disposition, retryAfter := classify(resp.StatusCode, errBody, resp.Header)
-			s.log.Warn("upstream rejected request", "provider", candidate.Provider, "model", candidate.Alias, "status", resp.StatusCode, "disposition", disposition)
-			switch disposition {
-			case "disable-key":
+			decision := adapter.Classify(resp.StatusCode, errBody, resp.Header)
+			s.log.Warn("upstream rejected request", "provider", candidate.Provider, "kind", adapter.Kind(), "model", candidate.Alias, "status", resp.StatusCode, "action", decision.Action)
+			switch decision.Action {
+			case provider.DisableKey:
 				pool.Disable(idx)
 				continue
-			case "retry-key":
-				pool.Cooldown(idx, time.Now().Add(maxDuration(retryAfter, 10*time.Second)))
+			case provider.RetryKey:
+				pool.Cooldown(idx, time.Now().Add(maxDuration(decision.RetryAfter, 10*time.Second)))
 				continue
-			case "fallback-model":
-				pool.Cooldown(idx, time.Now().Add(minPositive(retryAfter, 10*time.Second)))
-				s.router.Failure(candidate.Alias, strconv.Itoa(resp.StatusCode), time.Now(), retryAfter)
+			case provider.FallbackModel:
+				pool.Cooldown(idx, time.Now().Add(minPositive(decision.RetryAfter, 10*time.Second)))
+				st.router.Failure(candidate.Alias, strconv.Itoa(resp.StatusCode), time.Now(), decision.RetryAfter)
 				keyAttempt = maxKeyAttempts
 				continue
-			case "skip-model":
+			case provider.SkipModel:
 				keyAttempt = maxKeyAttempts
 				continue
 			default:
-				copyBufferedResponse(w, resp, errBody)
-				return
+				resp.Body = io.NopCloser(bytes.NewReader(errBody))
+				return resp, nil
 			}
 		}
 	}
-	s.metrics.Errors.Add(1)
-	http.Error(w, "alvus-core: all routes exhausted", http.StatusServiceUnavailable)
+	return nil, errors.New("all routes exhausted")
 }
 
-func (s *Server) doAttempt(original *http.Request, body []byte, stream bool, c router.Candidate, key string) (*http.Response, error) {
-	p := s.cfg.Providers[c.Provider]
-	target, err := targetURL(p.BaseURL, original.URL.Path, original.URL.RawQuery)
+func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath string, body []byte, stream bool, c router.Candidate, key string, adapter provider.Adapter) (*http.Response, error) {
+	p := st.cfg.Providers[c.Provider]
+	target, err := targetURL(p.BaseURL, targetPath, original.URL.RawQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +301,7 @@ func (s *Server) doAttempt(original *http.Request, body []byte, stream bool, c r
 	ctx := original.Context()
 	cancel := func() {}
 	if !stream {
-		ctx, cancel = context.WithTimeout(ctx, s.cfg.RequestTimeout.Duration)
+		ctx, cancel = context.WithTimeout(ctx, st.cfg.RequestTimeout.Duration)
 	}
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, original.Method, target, bytes.NewReader(patched))
@@ -259,7 +309,10 @@ func (s *Server) doAttempt(original *http.Request, body []byte, stream bool, c r
 		return nil, err
 	}
 	copyRequestHeaders(req.Header, original.Header)
-	req.Header.Set("Authorization", "Bearer "+key)
+	for k, v := range p.Headers {
+		req.Header.Set(k, v)
+	}
+	adapter.Authorize(req, key)
 	req.Header.Set("Content-Length", strconv.Itoa(len(patched)))
 	client := s.client
 	if stream {
@@ -289,12 +342,6 @@ func (s *Server) copyResponse(w http.ResponseWriter, resp *http.Response, stream
 		}
 	}
 	_, _ = io.Copy(w, resp.Body)
-}
-
-func copyBufferedResponse(w http.ResponseWriter, resp *http.Response, body []byte) {
-	copyResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(body)
 }
 
 func readLimitedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
@@ -337,45 +384,9 @@ func targetURL(base, path, rawQuery string) (string, error) {
 	return u.String(), nil
 }
 
-func classify(status int, body []byte, h http.Header) (string, time.Duration) {
-	retryAfter := parseRetryAfter(h.Get("Retry-After"), time.Now())
-	lower := strings.ToLower(string(body))
-	switch status {
-	case http.StatusUnauthorized:
-		return "disable-key", retryAfter
-	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, 529:
-		return "fallback-model", retryAfter
-	case http.StatusForbidden:
-		return "fallback-model", retryAfter
-	case http.StatusBadRequest:
-		if strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens") {
-			return "skip-model", 0
-		}
-		return "terminal", 0
-	default:
-		if status >= 500 {
-			return "retry-key", retryAfter
-		}
-		return "terminal", 0
-	}
-}
-
-func parseRetryAfter(v string, now time.Time) time.Duration {
-	if v == "" {
-		return 0
-	}
-	if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-		return time.Duration(n) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil && t.After(now) {
-		return t.Sub(now)
-	}
-	return 0
-}
-
 func copyRequestHeaders(dst, src http.Header) {
 	for k, vals := range src {
-		if hopByHop(k) || strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Length") {
+		if hopByHop(k) || strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Length") || strings.HasPrefix(strings.ToLower(k), "x-api-key") {
 			continue
 		}
 		for _, v := range vals {
@@ -383,6 +394,7 @@ func copyRequestHeaders(dst, src http.Header) {
 		}
 	}
 }
+
 func copyResponseHeaders(dst, src http.Header) {
 	for k, vals := range src {
 		if !hopByHop(k) {
@@ -392,6 +404,7 @@ func copyResponseHeaders(dst, src http.Header) {
 		}
 	}
 }
+
 func hopByHop(k string) bool {
 	switch strings.ToLower(k) {
 	case "connection", "proxy-connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
@@ -400,23 +413,27 @@ func hopByHop(k string) bool {
 		return false
 	}
 }
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
 func errString(err error, fallback string) string {
 	if err != nil {
 		return err.Error()
 	}
 	return fallback
 }
+
 func maxDuration(a, b time.Duration) time.Duration {
 	if a > b {
 		return a
 	}
 	return b
 }
+
 func minPositive(a, b time.Duration) time.Duration {
 	if a <= 0 {
 		return b

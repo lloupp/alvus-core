@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -36,9 +37,11 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()) }
 
 type Provider struct {
-	BaseURL   string   `json:"base_url"`
-	APIKeyEnv string   `json:"api_key_env,omitempty"`
-	APIKeys   []string `json:"api_keys,omitempty"`
+	Kind      string            `json:"kind,omitempty"`
+	BaseURL   string            `json:"base_url"`
+	APIKeyEnv string            `json:"api_key_env,omitempty"`
+	APIKeys   []string          `json:"api_keys,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 type Model struct {
@@ -92,6 +95,7 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyEnv(&cfg)
+	normalizeProviders(&cfg)
 	resolveProviderKeys(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -118,6 +122,19 @@ func applyEnv(cfg *Config) {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			cfg.RequestTimeout = Duration{d}
 		}
+	}
+}
+
+func normalizeProviders(cfg *Config) {
+	for name, p := range cfg.Providers {
+		p.Kind = strings.ToLower(strings.TrimSpace(p.Kind))
+		if p.Kind == "" {
+			p.Kind = "openai"
+		}
+		if p.Headers == nil {
+			p.Headers = map[string]string{}
+		}
+		cfg.Providers[name] = p
 	}
 }
 
@@ -165,6 +182,15 @@ func (c Config) Validate() error {
 	for name, p := range c.Providers {
 		if strings.TrimSpace(p.BaseURL) == "" {
 			return fmt.Errorf("provider %q: base_url is required", name)
+		}
+		u, err := url.Parse(p.BaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("provider %q: invalid base_url", name)
+		}
+		switch p.Kind {
+		case "openai", "nvidia", "openrouter", "groq", "together":
+		default:
+			return fmt.Errorf("provider %q: unsupported kind %q", name, p.Kind)
 		}
 		if len(p.APIKeys) == 0 {
 			return fmt.Errorf("provider %q: no API keys resolved", name)
