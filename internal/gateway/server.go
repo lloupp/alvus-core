@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,18 @@ type runtimeState struct {
 	adapters map[string]provider.Adapter
 }
 
+type cancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (c *cancelReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	c.once.Do(c.cancel)
+	return err
+}
+
 type Server struct {
 	state        atomic.Pointer[runtimeState]
 	client       *http.Client
@@ -54,6 +67,7 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 	}
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
+		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          128,
 		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       90 * time.Second,
@@ -299,13 +313,15 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 	}
 
 	ctx := original.Context()
-	cancel := func() {}
+	var cancel context.CancelFunc
 	if !stream {
 		ctx, cancel = context.WithTimeout(ctx, st.cfg.RequestTimeout.Duration)
 	}
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, original.Method, target, bytes.NewReader(patched))
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, err
 	}
 	copyRequestHeaders(req.Header, original.Header)
@@ -318,7 +334,17 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 	if stream {
 		client = s.streamClient
 	}
-	return client.Do(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		return nil, err
+	}
+	if cancel != nil {
+		resp.Body = &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}
+	}
+	return resp, nil
 }
 
 func (s *Server) copyResponse(w http.ResponseWriter, resp *http.Response, stream bool) {

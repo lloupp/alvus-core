@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,6 +9,30 @@ import (
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type contextAwareBody struct {
+	ctx    context.Context
+	reader *strings.Reader
+	closed bool
+}
+
+func (b *contextAwareBody) Read(p []byte) (int, error) {
+	select {
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	default:
+		return b.reader.Read(p)
+	}
+}
+
+func (b *contextAwareBody) Close() error {
+	b.closed = true
+	return nil
+}
 
 func TestAnthropicMessagesTranslation(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +70,39 @@ func TestAnthropicMessagesTranslation(t *testing.T) {
 	content := out["content"].([]any)
 	if content[0].(map[string]any)["text"] != "hello" {
 		t.Fatalf("content=%#v", content)
+	}
+}
+
+func TestAnthropicResponseContextLivesUntilBodyClose(t *testing.T) {
+	s := New(baseConfig("https://example.test/v1"), nil)
+	var upstreamBody *contextAwareBody
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamBody = &contextAwareBody{
+			ctx:    r.Context(),
+			reader: strings.NewReader(`{"id":"chat-1","model":"real-a","choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]}`),
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       upstreamBody,
+			Request:    r,
+		}, nil
+	})
+
+	body := `{"model":"a","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamBody == nil || !upstreamBody.closed {
+		t.Fatal("upstream response body was not closed")
+	}
+	select {
+	case <-upstreamBody.ctx.Done():
+	default:
+		t.Fatal("upstream request context was not canceled after body close")
 	}
 }
 
