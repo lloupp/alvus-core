@@ -74,12 +74,14 @@ Provider credentials are resolved through each provider's `api_key_env` field.
 
 The default NVIDIA-only example exposes task-oriented routes:
 
-- `quality`: Nemotron 3 Ultra → Kimi-K3 → Nemotron 3 Super → GLM-5.3 → Nemotron 3.5 Lightning → GLM-5.3 Flash.
-- `coding`: Nemotron 3 Ultra → Kimi-K3 → Nemotron 3 Super → Nemotron 3.5 Lightning → GLM-5.3 → GLM-5.3 Flash.
-- `reasoning`: Nemotron 3 Super → GLM-5.3 → Nemotron 3 Ultra → Kimi-K3 → Nemotron 3.5 Lightning → GLM-5.3 Flash.
-- `fast`: Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning → GLM-5.3 → Kimi-K3 → GLM-5.3 Flash.
+- `quality`: Kimi-K3 → GLM-5.3 → Nemotron 3 Ultra → Nemotron 3 Super → Nemotron 3.5 Lightning.
+- `coding`: Kimi-K3 → GLM-5.3 → Nemotron 3 Ultra → Nemotron 3 Super → Nemotron 3.5 Lightning.
+- `reasoning`: GLM-5.3 → Kimi-K3 → Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
+- `fast`: GLM-5.3 → Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
 - `vision`: Kimi-K3 → GLM-5.3 Flash.
-- `auto` / `default`: Nemotron 3 Super → Nemotron 3 Ultra → Kimi-K3 → GLM-5.3 → Nemotron 3.5 Lightning → GLM-5.3 Flash.
+- `auto` / `default`: GLM-5.3 → Kimi-K3 → Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
+
+Nemotron models are intentionally kept at the end of non-vision routes. GLM-5.3 Flash is omitted from general routes because the live validation showed very high latency/timeouts; it remains only as a vision fallback.
 
 Model entries can define `params`. These are applied as defaults after routing, while explicit client parameters win. This lets Alvus Core request a model's preferred reasoning mode without forcing Pi Agent, Claude-compatible clients or OpenAI-compatible clients to know provider-specific knobs.
 
