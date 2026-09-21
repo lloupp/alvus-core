@@ -70,12 +70,50 @@
     }
   },
   "routes": {
-    "quality": ["nemotron_ultra", "kimi_k3", "nemotron_super", "glm53", "nemotron_lightning", "glm53_flash"],
-    "coding": ["nemotron_ultra", "kimi_k3", "nemotron_super", "nemotron_lightning", "glm53", "glm53_flash"],
-    "reasoning": ["nemotron_super", "glm53", "nemotron_ultra", "kimi_k3", "nemotron_lightning", "glm53_flash"],
-    "fast": ["nemotron_super", "nemotron_ultra", "nemotron_lightning", "glm53", "kimi_k3", "glm53_flash"],
-    "vision": ["kimi_k3", "glm53_flash"],
-    "auto": ["nemotron_super", "nemotron_ultra", "kimi_k3", "glm53", "nemotron_lightning", "glm53_flash"],
-    "default": ["nemotron_super", "nemotron_ultra", "kimi_k3", "glm53", "nemotron_lightning", "glm53_flash"]
+    "quality": [
+      "kimi_k3",
+      "glm53",
+      "nemotron_ultra",
+      "nemotron_super",
+      "nemotron_lightning"
+    ],
+    "coding": [
+      "kimi_k3",
+      "glm53",
+      "nemotron_ultra",
+      "nemotron_super",
+      "nemotron_lightning"
+    ],
+    "reasoning": [
+      "glm53",
+      "kimi_k3",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ],
+    "fast": [
+      "glm53",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ],
+    "vision": [
+      "kimi_k3",
+      "glm53_flash"
+    ],
+    "auto": [
+      "glm53",
+      "kimi_k3",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ],
+    "default": [
+      "glm53",
+      "kimi_k3",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ]
   }
 }
