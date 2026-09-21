@@ -16,7 +16,7 @@
   "models": {
     "glm53": {
       "provider": "nvidia",
-      "upstream_model": "z-ai/glm-5-3",
+      "upstream_model": "z-ai/glm-5.3",
       "params": {
         "reasoning_effort": "max",
         "chat_template_kwargs": {
@@ -51,7 +51,7 @@
     },
     "glm53_flash": {
       "provider": "nvidia",
-      "upstream_model": "z-ai/glm-5-3-flash",
+      "upstream_model": "z-ai/glm-5.3-flash",
       "params": {
         "reasoning_effort": "low",
         "chat_template_kwargs": {
@@ -70,12 +70,50 @@
     }
   },
   "routes": {
-    "quality": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash", "nemotron_lightning"],
-    "coding": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash"],
-    "reasoning": ["nemotron_ultra", "glm53", "kimi_k3", "nemotron_super"],
-    "fast": ["glm53_flash", "nemotron_lightning", "nemotron_super"],
-    "vision": ["kimi_k3", "glm53_flash"],
-    "auto": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash", "nemotron_lightning"],
-    "default": ["glm53", "kimi_k3", "nemotron_ultra", "nemotron_super", "glm53_flash", "nemotron_lightning"]
+    "quality": [
+      "kimi_k3",
+      "glm53",
+      "nemotron_ultra",
+      "nemotron_super",
+      "nemotron_lightning"
+    ],
+    "coding": [
+      "kimi_k3",
+      "glm53",
+      "nemotron_ultra",
+      "nemotron_super",
+      "nemotron_lightning"
+    ],
+    "reasoning": [
+      "glm53",
+      "kimi_k3",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ],
+    "fast": [
+      "glm53",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ],
+    "vision": [
+      "kimi_k3",
+      "glm53_flash"
+    ],
+    "auto": [
+      "glm53",
+      "kimi_k3",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ],
+    "default": [
+      "glm53",
+      "kimi_k3",
+      "nemotron_super",
+      "nemotron_ultra",
+      "nemotron_lightning"
+    ]
   }
 }

@@ -94,7 +94,7 @@ func TestTargetURLAvoidsDoubleV1(t *testing.T) {
 
 func TestModelDefaultsApplyWithoutOverridingClient(t *testing.T) {
 	body := []byte(`{"model":"quality","messages":[],"reasoning_effort":"low"}`)
-	patched, err := patchModelRequest(body, "z-ai/glm-5-3", map[string]any{
+	patched, err := patchModelRequest(body, "z-ai/glm-5.3", map[string]any{
 		"reasoning_effort":     "max",
 		"chat_template_kwargs": map[string]any{"clear_thinking": true},
 	})
@@ -105,7 +105,7 @@ func TestModelDefaultsApplyWithoutOverridingClient(t *testing.T) {
 	if err := json.Unmarshal(patched, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["model"] != "z-ai/glm-5-3" {
+	if got["model"] != "z-ai/glm-5.3" {
 		t.Fatalf("model=%v", got["model"])
 	}
 	if got["reasoning_effort"] != "low" {
