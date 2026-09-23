@@ -18,9 +18,10 @@ const (
 )
 
 type Decision struct {
-	Action     Action
-	RetryAfter time.Duration
-	Reason     string
+	Action             Action
+	RetryAfter         time.Duration
+	Reason             string
+	CooldownCredential bool
 }
 
 type Adapter interface {
@@ -60,7 +61,7 @@ func (a openAIAdapter) Classify(status int, body []byte, h http.Header) Decision
 	case http.StatusPaymentRequired:
 		return Decision{Action: Terminal, Reason: "billing required"}
 	case http.StatusTooManyRequests:
-		return Decision{Action: FallbackModel, RetryAfter: retryAfter, Reason: "rate limited"}
+		return Decision{Action: FallbackModel, RetryAfter: retryAfter, Reason: "rate limited", CooldownCredential: true}
 	case http.StatusBadGateway, http.StatusServiceUnavailable, 529:
 		return Decision{Action: FallbackModel, RetryAfter: retryAfter, Reason: "provider capacity"}
 	case http.StatusBadRequest:
