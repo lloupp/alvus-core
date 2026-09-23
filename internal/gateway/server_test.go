@@ -52,6 +52,86 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 	}
 }
 
+func TestPerModelTimeoutFallsBackWithoutRetryingSecondKey(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		if v["model"] == "real-a" {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"fallback-ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer up.Close()
+
+	cfg := baseConfig(up.URL + "/v1")
+	a := cfg.Models["a"]
+	a.AttemptTimeout = config.Duration{Duration: 25 * time.Millisecond}
+	cfg.Models["a"] = a
+
+	s := New(cfg, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fallback-ok") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want exactly 2 (one timeout + one fallback)", calls.Load())
+	}
+	stats := s.modelMetricsSnapshot()
+	if stats["a"]["timeouts"] != uint64(1) {
+		t.Fatalf("a metrics=%#v", stats["a"])
+	}
+	if stats["a"]["fallbacks"] != uint64(1) {
+		t.Fatalf("a fallback metrics=%#v", stats["a"])
+	}
+}
+
+func TestStreamingHeaderTimeoutFallsBack(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		if v["model"] == "real-a" {
+			<-r.Context().Done()
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer up.Close()
+
+	cfg := baseConfig(up.URL + "/v1")
+	a := cfg.Models["a"]
+	a.AttemptTimeout = config.Duration{Duration: 25 * time.Millisecond}
+	cfg.Models["a"] = a
+
+	s := New(cfg, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[],"stream":true}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "[DONE]") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want exactly 2", calls.Load())
+	}
+	stats := s.modelMetricsSnapshot()
+	if stats["a"]["timeouts"] != uint64(1) {
+		t.Fatalf("a metrics=%#v", stats["a"])
+	}
+}
+
 func TestFallbackOnEmptySuccessfulCompletion(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
