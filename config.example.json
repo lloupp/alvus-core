@@ -6,6 +6,17 @@
     "failure_threshold": 3,
     "cooldown": "60s"
   },
+  "cache": {
+    "responses": {
+      "enabled": false,
+      "ttl": "1h",
+      "max_entries": 1024,
+      "max_body_bytes": 8388608,
+      "provider_kinds": [
+        "nvidia"
+      ]
+    }
+  },
   "providers": {
     "nvidia": {
       "kind": "nvidia",
