@@ -52,6 +52,94 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 	}
 }
 
+func TestFallbackOnEmptySuccessfulCompletion(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if call == 1 {
+			if v["model"] != "real-a" {
+				t.Errorf("first model=%v", v["model"])
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`))
+			return
+		}
+		if v["model"] != "real-b" {
+			t.Errorf("fallback model=%v", v["model"])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"fallback-ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "fallback-ok") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if s.metrics.Fallbacks.Load() != 1 {
+		t.Fatalf("fallbacks=%d", s.metrics.Fallbacks.Load())
+	}
+}
+
+func TestToolCallOnlyCompletionDoesNotFallback(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"add","arguments":"{\\\"a\\\":1}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("unexpected fallback, calls=%d", calls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "tool_calls") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestContentFilterCompletionDoesNotFallback(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("content filter must not trigger fallback, calls=%d", calls.Load())
+	}
+}
+
 func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
 	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":1}`)) }))
 	defer up1.Close()
