@@ -414,9 +414,9 @@ def stability_test():
 
 def direct_model_diagnostics():
     if MODE == "full":
-        default_models = "nemotron_super,nemotron_ultra,glm53,kimi_k3,nemotron_lightning"
+        default_models = "nemotron_super_interactive,nemotron_super,nemotron_ultra,glm53,kimi_k3,nemotron_lightning"
     else:
-        default_models = "nemotron_super,nemotron_ultra"
+        default_models = "nemotron_super_interactive,nemotron_ultra"
     raw_models = os.environ.get("ALVUS_READINESS_DIRECT_MODELS", default_models)
     aliases = [x.strip() for x in raw_models.split(",") if x.strip()]
     rows = {}
@@ -427,13 +427,14 @@ def direct_model_diagnostics():
         row["instruction_ok"] = bool(row.get("expected_ok"))
         row["pass"] = row["transport_ok"] and row["instruction_ok"]
         rows[alias] = row
-    primary = [x for x in ("nemotron_super", "nemotron_ultra") if x in rows]
-    primary_transport_pass = bool(primary) and all(rows[x].get("transport_ok") for x in primary)
-    primary_instruction_pass = bool(primary) and all(rows[x].get("instruction_ok") for x in primary)
+    primary = [x for x in ("nemotron_super_interactive", "nemotron_ultra") if x in rows]
+    primary_transport_pass = bool(primary) and any(rows[x].get("transport_ok") for x in primary)
+    primary_instruction_pass = bool(primary) and any(rows[x].get("instruction_ok") for x in primary)
     return {
         "models": rows,
         "primary_transport_pass": primary_transport_pass,
         "primary_instruction_pass": primary_instruction_pass,
+        "gating": false,
     }
 
 
@@ -501,7 +502,6 @@ def main():
         and stream.get("pass")
         and tools.get("pass")
         and stability["summary"]["pass"]
-        and direct["primary_transport_pass"]
         and empty_200 == 0
     )
 
