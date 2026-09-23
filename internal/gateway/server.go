@@ -116,7 +116,7 @@ func buildState(cfg config.Config) (*runtimeState, error) {
 	}
 	var cache responsecache.Store
 	if cfg.Cache.Responses.Enabled {
-		cache = responsecache.NewMemory(cfg.Cache.Responses.MaxEntries)
+		cache = responsecache.NewMemory(cfg.Cache.Responses.MaxEntries, cfg.Cache.Responses.MaxBytes)
 	}
 	return &runtimeState{
 		cfg:           cfg,
@@ -220,8 +220,11 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		hitRate = float64(hits) / float64(total)
 	}
 	cacheEntries := 0
+	var cacheBytes int64
 	if st.responseCache != nil {
-		cacheEntries = st.responseCache.Len(time.Now())
+		now := time.Now()
+		cacheEntries = st.responseCache.Len(now)
+		cacheBytes = st.responseCache.Bytes(now)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"requests":            s.metrics.Requests.Load(),
@@ -233,6 +236,7 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		"cache_misses":        misses,
 		"cache_stores":        s.metrics.CacheStores.Load(),
 		"cache_entries":       cacheEntries,
+		"cache_bytes":         cacheBytes,
 		"cache_hit_rate":      hitRate,
 		"response_cache_on":   st.responseCache != nil,
 		"circuits":            st.router.Snapshot(time.Now()),
@@ -305,7 +309,8 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 		cacheable := st.responseCache != nil &&
 			!stream &&
 			targetPath == "/v1/chat/completions" &&
-			cacheAllowsProviderKind(st.cfg.Cache.Responses, adapter.Kind())
+			cacheAllowsProviderKind(st.cfg.Cache.Responses, adapter.Kind()) &&
+			requestAllowsResponseCache(patched)
 		cacheKey := ""
 		if cacheable {
 			cacheKey = responsecache.Key(candidate.Provider, candidate.UpstreamModel, original.Method, targetPath, original.URL.RawQuery, patched)
@@ -350,8 +355,7 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 					cached, ok, cacheErr := snapshotResponse(resp, st.cfg.Cache.Responses.MaxBodyBytes)
 					if cacheErr != nil {
 						s.log.Warn("failed to snapshot upstream response for cache", "provider", candidate.Provider, "model", candidate.Alias, "error", cacheErr)
-					} else if ok {
-						st.responseCache.Set(cacheKey, cached, st.cfg.Cache.Responses.TTL.Duration, time.Now())
+					} else if ok && st.responseCache.Set(cacheKey, cached, st.cfg.Cache.Responses.TTL.Duration, time.Now()) {
 						s.metrics.CacheStores.Add(1)
 					}
 				}
@@ -522,6 +526,19 @@ func cacheAllowsProviderKind(cfg config.ResponseCache, kind string) bool {
 	return false
 }
 
+func requestAllowsResponseCache(body []byte) bool {
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal(body, &request); err != nil {
+		return false
+	}
+	for _, field := range []string{"tools", "tool_choice", "functions", "function_call"} {
+		if raw, ok := request[field]; ok && hasMeaningfulJSONValue(raw) {
+			return false
+		}
+	}
+	return true
+}
+
 func cachedResponse(cached responsecache.Response) *http.Response {
 	return &http.Response{
 		StatusCode:    cached.StatusCode,
@@ -535,7 +552,10 @@ func snapshotResponse(resp *http.Response, maxBytes int64) (responsecache.Respon
 	original := resp.Body
 	data, err := io.ReadAll(io.LimitReader(original, maxBytes+1))
 	if err != nil {
-		_ = original.Close()
+		resp.Body = &replayReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(data), original),
+			closer: original,
+		}
 		return responsecache.Response{}, false, err
 	}
 	if int64(len(data)) > maxBytes {
