@@ -15,8 +15,11 @@ const (
 	DefaultListen          = "127.0.0.1:3000"
 	DefaultBodyLimit       = int64(64 << 20)
 	DefaultRequestTimeout  = 300 * time.Second
-	DefaultFailureLimit    = 3
-	DefaultCircuitCooldown = 60 * time.Second
+	DefaultFailureLimit       = 3
+	DefaultCircuitCooldown    = 60 * time.Second
+	DefaultResponseCacheTTL   = time.Hour
+	DefaultResponseCacheSize  = 1024
+	DefaultResponseCacheBytes = int64(8 << 20)
 )
 
 type Duration struct{ time.Duration }
@@ -55,6 +58,18 @@ type CircuitBreaker struct {
 	Cooldown         Duration `json:"cooldown"`
 }
 
+type ResponseCache struct {
+	Enabled       bool     `json:"enabled"`
+	TTL           Duration `json:"ttl"`
+	MaxEntries    int      `json:"max_entries"`
+	MaxBodyBytes  int64    `json:"max_body_bytes"`
+	ProviderKinds []string `json:"provider_kinds,omitempty"`
+}
+
+type Cache struct {
+	Responses ResponseCache `json:"responses"`
+}
+
 type Config struct {
 	Listen                string              `json:"listen"`
 	ProxyToken            string              `json:"proxy_token,omitempty"`
@@ -62,6 +77,7 @@ type Config struct {
 	RequestBodyLimitBytes int64               `json:"request_body_limit_bytes"`
 	RequestTimeout        Duration            `json:"request_timeout"`
 	CircuitBreaker        CircuitBreaker      `json:"circuit_breaker"`
+	Cache                 Cache               `json:"cache"`
 	Providers             map[string]Provider `json:"providers"`
 	Models                map[string]Model    `json:"models"`
 	Routes                map[string][]string `json:"routes"`
@@ -75,6 +91,14 @@ func Defaults() Config {
 		CircuitBreaker: CircuitBreaker{
 			FailureThreshold: DefaultFailureLimit,
 			Cooldown:         Duration{DefaultCircuitCooldown},
+		},
+		Cache: Cache{
+			Responses: ResponseCache{
+			TTL:           Duration{DefaultResponseCacheTTL},
+			MaxEntries:    DefaultResponseCacheSize,
+			MaxBodyBytes:  DefaultResponseCacheBytes,
+			ProviderKinds: []string{"nvidia"},
+			},
 		},
 		Providers: map[string]Provider{},
 		Models:    map[string]Model{},
@@ -176,6 +200,25 @@ func (c Config) Validate() error {
 	}
 	if c.CircuitBreaker.Cooldown.Duration <= 0 {
 		return errors.New("circuit_breaker.cooldown must be > 0")
+	}
+	if c.Cache.Responses.Enabled {
+		if c.Cache.Responses.TTL.Duration <= 0 {
+			return errors.New("cache.responses.ttl must be > 0")
+		}
+		if c.Cache.Responses.MaxEntries <= 0 {
+			return errors.New("cache.responses.max_entries must be > 0")
+		}
+		if c.Cache.Responses.MaxBodyBytes <= 0 {
+			return errors.New("cache.responses.max_body_bytes must be > 0")
+		}
+		if len(c.Cache.Responses.ProviderKinds) == 0 {
+			return errors.New("cache.responses.provider_kinds must not be empty")
+		}
+		for _, kind := range c.Cache.Responses.ProviderKinds {
+			if strings.TrimSpace(kind) == "" {
+				return errors.New("cache.responses.provider_kinds must not contain empty values")
+			}
+		}
 	}
 	if len(c.Providers) == 0 {
 		return errors.New("at least one provider is required")
