@@ -8,6 +8,7 @@ Standard-library only so it runs in Termux and ordinary Linux Python.
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import time
@@ -25,6 +26,7 @@ MODE = os.environ.get("ALVUS_READINESS_MODE", "quick").strip().lower()
 TIMEOUT = float(os.environ.get("ALVUS_READINESS_TIMEOUT", "190"))
 MAX_AUTO_MEDIAN = float(os.environ.get("ALVUS_READINESS_MAX_AUTO_MEDIAN", "45"))
 MAX_AUTO_P95 = float(os.environ.get("ALVUS_READINESS_MAX_AUTO_P95", "90"))
+MIN_AUTO_INSTRUCTION_RATE = float(os.environ.get("ALVUS_READINESS_MIN_AUTO_INSTRUCTION_RATE", "0.8"))
 RUN_ID = str(int(time.time()))
 
 
@@ -146,6 +148,24 @@ def prompt_call(model, prompt, expected=None, max_tokens=128):
         result["expected"] = expected
         result["expected_ok"] = expected in result.get("content", "")
     return result
+
+
+def useful_200(result):
+    return (
+        result.get("status") == 200
+        and result.get("useful")
+        and not result.get("empty_200")
+    )
+
+
+def contains_number(text, value):
+    text = (text or "").lower()
+    digits = str(value)
+    if digits in re.sub(r"[\s,._]", "", text):
+        return True
+    if value == 2000 and "two thousand" in text:
+        return True
+    return False
 
 
 def stream_call(model, prompt):
@@ -337,12 +357,11 @@ def core_route_tests():
         )
     for name, item in tests.items():
         expected = item.get("expected")
-        item["pass"] = (
-            item.get("status") == 200
-            and item.get("useful")
-            and not item.get("empty_200")
-            and (expected is None or item.get("expected_ok"))
-        )
+        item["transport_ok"] = useful_200(item)
+        if name == "reasoning":
+            item["expected_ok"] = contains_number(item.get("content", ""), 2000)
+        item["instruction_ok"] = expected is None or bool(item.get("expected_ok"))
+        item["pass"] = item["transport_ok"] and item["instruction_ok"]
     return tests
 
 
@@ -353,32 +372,43 @@ def stability_test():
         expected = "ALVUS_STABLE_" + RUN_ID + "_" + str(i + 1)
         row = prompt_call("auto", "Reply exactly: " + expected, expected, 64)
         row["run"] = i + 1
-        row["pass"] = (
-            row.get("status") == 200
-            and row.get("useful")
-            and not row.get("empty_200")
-            and row.get("expected_ok")
-        )
+        row["transport_ok"] = useful_200(row)
+        row["instruction_ok"] = bool(row.get("expected_ok"))
+        row["pass"] = row["transport_ok"] and row["instruction_ok"]
         rows.append(row)
-    good_latencies = [r["elapsed_s"] for r in rows if r.get("pass")]
+
+    transport_rows = [r for r in rows if r.get("transport_ok")]
+    good_latencies = [r["elapsed_s"] for r in transport_rows]
+    transport_passed = len(transport_rows)
+    instruction_passed = sum(bool(r.get("instruction_ok")) for r in rows)
+    instruction_rate = instruction_passed / count if count else 0.0
+
     summary = {
         "attempts": count,
-        "passed": sum(bool(r.get("pass")) for r in rows),
+        "transport_passed": transport_passed,
+        "instruction_passed": instruction_passed,
+        "instruction_rate": round(instruction_rate, 3),
         "http_200_empty": sum(bool(r.get("empty_200")) for r in rows),
-        "failures": sum(not bool(r.get("pass")) for r in rows),
+        "transport_failures": count - transport_passed,
+        "instruction_failures": count - instruction_passed,
         "min_s": round(min(good_latencies), 3) if good_latencies else None,
         "median_s": round(statistics.median(good_latencies), 3) if good_latencies else None,
         "p95_s": round(percentile(good_latencies, 0.95), 3) if good_latencies else None,
         "max_s": round(max(good_latencies), 3) if good_latencies else None,
     }
-    summary["reliability_pass"] = summary["passed"] == count and summary["http_200_empty"] == 0
+    summary["reliability_pass"] = transport_passed == count and summary["http_200_empty"] == 0
+    summary["instruction_pass"] = instruction_rate >= MIN_AUTO_INSTRUCTION_RATE
     summary["performance_pass"] = (
         summary["median_s"] is not None
         and summary["p95_s"] is not None
         and summary["median_s"] <= MAX_AUTO_MEDIAN
         and summary["p95_s"] <= MAX_AUTO_P95
     )
-    summary["pass"] = summary["reliability_pass"] and summary["performance_pass"]
+    summary["pass"] = (
+        summary["reliability_pass"]
+        and summary["instruction_pass"]
+        and summary["performance_pass"]
+    )
     return {"rows": rows, "summary": summary}
 
 
@@ -393,16 +423,18 @@ def direct_model_diagnostics():
     for alias in aliases:
         expected = "ALVUS_DIRECT_" + alias.upper() + "_" + RUN_ID
         row = prompt_call(alias, "Reply exactly: " + expected, expected, 64)
-        row["pass"] = (
-            row.get("status") == 200
-            and row.get("useful")
-            and not row.get("empty_200")
-            and row.get("expected_ok")
-        )
+        row["transport_ok"] = useful_200(row)
+        row["instruction_ok"] = bool(row.get("expected_ok"))
+        row["pass"] = row["transport_ok"] and row["instruction_ok"]
         rows[alias] = row
     primary = [x for x in ("nemotron_super", "nemotron_ultra") if x in rows]
-    primary_pass = bool(primary) and all(rows[x].get("pass") for x in primary)
-    return {"models": rows, "primary_pass": primary_pass}
+    primary_transport_pass = bool(primary) and all(rows[x].get("transport_ok") for x in primary)
+    primary_instruction_pass = bool(primary) and all(rows[x].get("instruction_ok") for x in primary)
+    return {
+        "models": rows,
+        "primary_transport_pass": primary_transport_pass,
+        "primary_instruction_pass": primary_instruction_pass,
+    }
 
 
 def metric_delta(before, after):
@@ -469,7 +501,7 @@ def main():
         and stream.get("pass")
         and tools.get("pass")
         and stability["summary"]["pass"]
-        and direct["primary_pass"]
+        and direct["primary_transport_pass"]
         and empty_200 == 0
     )
 
@@ -479,6 +511,7 @@ def main():
         "thresholds": {
             "auto_median_s_max": MAX_AUTO_MEDIAN,
             "auto_p95_s_max": MAX_AUTO_P95,
+            "auto_instruction_rate_min": MIN_AUTO_INSTRUCTION_RATE,
         },
         "endpoints": initial_simple,
         "routes": routes,
