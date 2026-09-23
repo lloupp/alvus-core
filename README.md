@@ -136,6 +136,17 @@ export NVIDIA_API_KEYS="nvapi-first,nvapi-second"
 
 The harness tests both keys independently with a non-streaming request and an SSE streaming request. It never prints or writes the keys. Its default model is `nvidia/nemotron-3-super-120b-a12b`; override it with `NVIDIA_E2E_MODEL` if needed.
 
+For an isolated benchmark through Alvus Core itself, request a direct model alias so no route fallback can hide the model's own latency or failures. For GLM-5.3 Flash:
+
+```bash
+ALVUS_BENCH_MODEL=glm53_flash \
+ALVUS_BENCH_RUNS=5 \
+ALVUS_BENCH_STREAM_RUNS=3 \
+python3 scripts/benchmark-alvus-route.py
+```
+
+The benchmark records useful/empty HTTP 200 responses, exact prompt compliance, total latency, streaming TTFT and completion of the SSE stream. It uses the local gateway at `http://127.0.0.1:3000/v1` by default and never reads provider credentials.
+
 
 ## Security
 
