@@ -49,9 +49,10 @@ type Provider struct {
 }
 
 type Model struct {
-	Provider      string         `json:"provider"`
-	UpstreamModel string         `json:"upstream_model"`
-	Params        map[string]any `json:"params,omitempty"`
+	Provider       string         `json:"provider"`
+	UpstreamModel  string         `json:"upstream_model"`
+	Params         map[string]any `json:"params,omitempty"`
+	AttemptTimeout Duration       `json:"attempt_timeout,omitempty"`
 }
 
 type CircuitBreaker struct {
@@ -258,6 +259,9 @@ func (c Config) Validate() error {
 		}
 		if strings.TrimSpace(m.UpstreamModel) == "" {
 			return fmt.Errorf("model %q: upstream_model is required", name)
+		}
+		if m.AttemptTimeout.Duration < 0 {
+			return fmt.Errorf("model %q: attempt_timeout must be >= 0", name)
 		}
 	}
 	for route, models := range c.Routes {
