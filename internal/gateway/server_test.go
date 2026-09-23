@@ -141,9 +141,13 @@ func TestContentFilterCompletionDoesNotFallback(t *testing.T) {
 }
 
 func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
-	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-1"},"finish_reason":"stop"}]}`)) }))
+	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-1"},"finish_reason":"stop"}]}`))
+	}))
 	defer up1.Close()
-	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-2"},"finish_reason":"stop"}]}`)) }))
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-2"},"finish_reason":"stop"}]}`))
+	}))
 	defer up2.Close()
 	c1 := baseConfig(up1.URL + "/v1")
 	s := New(c1, nil)
