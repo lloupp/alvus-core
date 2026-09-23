@@ -102,13 +102,13 @@ Operational counters are exposed through `/metrics`: `cache_hits`, `cache_misses
 The default NVIDIA-only example exposes task-oriented routes:
 
 - `quality`: Kimi-K3 → GLM-5.3 → Nemotron 3 Ultra → Nemotron 3 Super → Nemotron 3.5 Lightning.
-- `coding`: Nemotron 3 Ultra → Nemotron 3 Super → Kimi-K3 → GLM-5.3 → Nemotron 3.5 Lightning.
-- `reasoning`: Nemotron 3 Super → Nemotron 3 Ultra → GLM-5.3 → Kimi-K3 → Nemotron 3.5 Lightning.
-- `fast`: Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
+- `coding`: Nemotron 3 Ultra → Nemotron 3 Super.
+- `reasoning`: Nemotron 3 Super → Nemotron 3 Ultra.
+- `fast`: Nemotron 3 Super → Nemotron 3 Ultra.
 - `vision`: Kimi-K3 → GLM-5.3 Flash.
-- `auto` / `default`: Nemotron 3 Super → Nemotron 3 Ultra → GLM-5.3 → Kimi-K3 → Nemotron 3.5 Lightning.
+- `auto` / `default`: Nemotron 3 Super → Nemotron 3 Ultra.
 
-The default example now favors measured backend responsiveness for general agent traffic while keeping slower frontier models available in `quality` and later fallbacks. GLM-5.3 Flash remains outside general routes after isolated live validation produced only one useful HTTP 200 in eight attempts, with ~146 s latency plus a 240 s timeout. Per-model attempt budgets in the example prevent a single unhealthy or slow candidate from consuming the entire fallback window.
+Interactive agent routes intentionally stay on the two candidates that remained reachable and useful in the latest live backend battery. In that run, `auto` and `fast` completed in about 1–2 seconds, `coding` in about 7 seconds, and direct Nemotron Super succeeded in about 2 seconds. GLM-5.3, Kimi-K3 and Nemotron 3.5 Lightning returned 503/timeouts during the same battery, so they no longer extend the latency tail of general agent requests. They remain configured for direct use, and the slower frontier models remain available through `quality`. GLM-5.3 Flash remains outside general routes after its isolated validation failed.
 
 Model entries can define `params`. These are applied as defaults after routing, while explicit client parameters win. This lets Alvus Core request a model's preferred reasoning mode without forcing Pi Agent, Claude-compatible clients or OpenAI-compatible clients to know provider-specific knobs.
 
