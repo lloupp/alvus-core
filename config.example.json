@@ -97,22 +97,15 @@
     ],
     "coding": [
       "nemotron_ultra",
-      "nemotron_super",
-      "kimi_k3",
-      "glm53",
-      "nemotron_lightning"
+      "nemotron_super"
     ],
     "reasoning": [
       "nemotron_super",
-      "nemotron_ultra",
-      "glm53",
-      "kimi_k3",
-      "nemotron_lightning"
+      "nemotron_ultra"
     ],
     "fast": [
       "nemotron_super",
-      "nemotron_ultra",
-      "nemotron_lightning"
+      "nemotron_ultra"
     ],
     "vision": [
       "kimi_k3",
@@ -120,17 +113,11 @@
     ],
     "auto": [
       "nemotron_super",
-      "nemotron_ultra",
-      "glm53",
-      "kimi_k3",
-      "nemotron_lightning"
+      "nemotron_ultra"
     ],
     "default": [
       "nemotron_super",
-      "nemotron_ultra",
-      "glm53",
-      "kimi_k3",
-      "nemotron_lightning"
+      "nemotron_ultra"
     ]
   }
 }
