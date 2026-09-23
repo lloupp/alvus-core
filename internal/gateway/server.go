@@ -497,7 +497,11 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 				if decision.CooldownCredential {
 					pool.Cooldown(idx, time.Now().Add(minPositive(decision.RetryAfter, 10*time.Second)))
 				}
-				st.router.Failure(candidate.Alias, strconv.Itoa(resp.StatusCode), time.Now(), decision.RetryAfter)
+				reason := decision.Reason
+				if reason == "" {
+					reason = strconv.Itoa(resp.StatusCode)
+				}
+				st.router.Failure(candidate.Alias, reason, time.Now(), decision.RetryAfter)
 				keyAttempt = maxKeyAttempts
 				continue
 			case provider.SkipModel:
