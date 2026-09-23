@@ -136,7 +136,11 @@ func TestRequestTimeoutBoundsEntireFallbackChain(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+			t.Error("upstream request context was not canceled")
+		}
 	}))
 	defer up.Close()
 
