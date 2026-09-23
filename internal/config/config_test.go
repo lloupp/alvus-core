@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadPrecedenceAndProviderNormalization(t *testing.T) {
@@ -39,5 +40,15 @@ func TestLoadPrecedenceAndProviderNormalization(t *testing.T) {
 	}
 	if !cfg.Cache.Responses.Enabled || cfg.Cache.Responses.MaxEntries != 64 || cfg.Cache.Responses.MaxBodyBytes != 1048576 || cfg.Cache.Responses.MaxBytes != 8388608 {
 		t.Fatalf("response cache config=%+v", cfg.Cache.Responses)
+	}
+}
+
+func TestModelAttemptTimeoutValidation(t *testing.T) {
+	cfg := Defaults()
+	cfg.Providers = map[string]Provider{"p": {BaseURL: "https://example.test/v1", APIKeys: []string{"k"}}}
+	cfg.Models = map[string]Model{"m": {Provider: "p", UpstreamModel: "real-m", AttemptTimeout: Duration{Duration: -time.Second}}}
+	cfg.Routes = map[string][]string{"default": {"m"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("negative model attempt timeout accepted")
 	}
 }
