@@ -6,7 +6,7 @@ Alvus Core is a reliability-first local inference gateway for OpenAI-compatible 
 
 - OpenAI-compatible `/v1/*` proxy with model rewriting.
 - Provider adapters for generic OpenAI, NVIDIA NIM, OpenRouter, Groq and Together.
-- Provider-specific error classification instead of treating key, model and provider failures as the same thing.
+- Provider-specific error classification instead of treating key, model and provider failures as the same thing. Model/provider-capacity fallbacks do not cool down otherwise healthy credentials; credential cooldown is reserved for credential-scoped failures such as rate limiting.
 - Per-provider credential pools with round-robin selection, cooldown and invalid-key disable.
 - Ordered model routes, model-level circuit breakers and optional per-model attempt timeouts.
 - OpenAI SSE streaming passthrough.
