@@ -434,7 +434,7 @@ def direct_model_diagnostics():
         "models": rows,
         "primary_transport_pass": primary_transport_pass,
         "primary_instruction_pass": primary_instruction_pass,
-        "gating": false,
+        "gating": False,
     }
 
 
