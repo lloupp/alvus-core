@@ -20,6 +20,7 @@ import (
 	"github.com/lloupp/alvus-core/internal/config"
 	"github.com/lloupp/alvus-core/internal/credentials"
 	"github.com/lloupp/alvus-core/internal/provider"
+	"github.com/lloupp/alvus-core/internal/responsecache"
 	"github.com/lloupp/alvus-core/internal/router"
 )
 
@@ -29,18 +30,22 @@ const (
 )
 
 type Metrics struct {
-	Requests  atomic.Uint64
-	Attempts  atomic.Uint64
-	Fallbacks atomic.Uint64
-	Errors    atomic.Uint64
-	Reloads   atomic.Uint64
+	Requests    atomic.Uint64
+	Attempts    atomic.Uint64
+	Fallbacks   atomic.Uint64
+	Errors      atomic.Uint64
+	Reloads     atomic.Uint64
+	CacheHits   atomic.Uint64
+	CacheMisses atomic.Uint64
+	CacheStores atomic.Uint64
 }
 
 type runtimeState struct {
-	cfg      config.Config
-	router   *router.Router
-	pools    map[string]*credentials.Pool
-	adapters map[string]provider.Adapter
+	cfg           config.Config
+	router        *router.Router
+	pools         map[string]*credentials.Pool
+	adapters      map[string]provider.Adapter
+	responseCache responsecache.Store
 }
 
 type cancelReadCloser struct {
@@ -109,7 +114,17 @@ func buildState(cfg config.Config) (*runtimeState, error) {
 		pools[name] = credentials.New(p.APIKeys)
 		adapters[name] = provider.New(p.Kind)
 	}
-	return &runtimeState{cfg: cfg, router: router.New(cfg), pools: pools, adapters: adapters}, nil
+	var cache responsecache.Store
+	if cfg.Cache.Responses.Enabled {
+		cache = responsecache.NewMemory(cfg.Cache.Responses.MaxEntries, cfg.Cache.Responses.MaxBytes)
+	}
+	return &runtimeState{
+		cfg:           cfg,
+		router:        router.New(cfg),
+		pools:         pools,
+		adapters:      adapters,
+		responseCache: cache,
+	}, nil
 }
 
 func (s *Server) Reload(cfg config.Config) error {
@@ -198,12 +213,32 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.state.Load()
+	hits := s.metrics.CacheHits.Load()
+	misses := s.metrics.CacheMisses.Load()
+	var hitRate float64
+	if total := hits + misses; total > 0 {
+		hitRate = float64(hits) / float64(total)
+	}
+	cacheEntries := 0
+	var cacheBytes int64
+	if st.responseCache != nil {
+		now := time.Now()
+		cacheEntries = st.responseCache.Len(now)
+		cacheBytes = st.responseCache.Bytes(now)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"requests":          s.metrics.Requests.Load(),
 		"upstream_attempts": s.metrics.Attempts.Load(),
 		"fallbacks":         s.metrics.Fallbacks.Load(),
 		"errors":            s.metrics.Errors.Load(),
 		"reloads":           s.metrics.Reloads.Load(),
+		"cache_hits":        hits,
+		"cache_misses":      misses,
+		"cache_stores":      s.metrics.CacheStores.Load(),
+		"cache_entries":     cacheEntries,
+		"cache_bytes":       cacheBytes,
+		"cache_hit_rate":    hitRate,
+		"response_cache_on": st.responseCache != nil,
 		"circuits":          st.router.Snapshot(time.Now()),
 	})
 }
@@ -265,6 +300,27 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 		if pool == nil || adapter == nil {
 			continue
 		}
+
+		patched, err := patchModelRequest(body, candidate.UpstreamModel, st.cfg.Models[candidate.Alias].Params)
+		if err != nil {
+			return nil, err
+		}
+
+		cacheable := st.responseCache != nil &&
+			!stream &&
+			targetPath == "/v1/chat/completions" &&
+			cacheAllowsProviderKind(st.cfg.Cache.Responses, adapter.Kind()) &&
+			requestAllowsResponseCache(patched)
+		cacheKey := ""
+		if cacheable {
+			cacheKey = responsecache.Key(candidate.Provider, candidate.UpstreamModel, original.Method, targetPath, original.URL.RawQuery, patched)
+			if cached, ok := st.responseCache.Get(cacheKey, time.Now()); ok {
+				s.metrics.CacheHits.Add(1)
+				return cachedResponse(cached), nil
+			}
+			s.metrics.CacheMisses.Add(1)
+		}
+
 		maxKeyAttempts := pool.Len()
 		for keyAttempt := 0; keyAttempt < maxKeyAttempts; keyAttempt++ {
 			idx, key, err := pool.Next(time.Now())
@@ -272,7 +328,7 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 				break
 			}
 			s.metrics.Attempts.Add(1)
-			resp, err := s.doAttempt(st, original, targetPath, body, stream, candidate, key, adapter)
+			resp, err := s.doAttempt(st, original, targetPath, patched, stream, candidate, key, adapter)
 			if err != nil {
 				pool.Cooldown(idx, time.Now().Add(5*time.Second))
 				s.log.Warn("upstream request failed", "provider", candidate.Provider, "model", candidate.Alias, "error", err)
@@ -295,6 +351,14 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 					}
 				}
 				st.router.Success(candidate.Alias)
+				if cacheable {
+					cached, ok, cacheErr := snapshotResponse(resp, st.cfg.Cache.Responses.MaxBodyBytes)
+					if cacheErr != nil {
+						s.log.Warn("failed to snapshot upstream response for cache", "provider", candidate.Provider, "model", candidate.Alias, "error", cacheErr)
+					} else if ok && st.responseCache.Set(cacheKey, cached, st.cfg.Cache.Responses.TTL.Duration, time.Now()) {
+						s.metrics.CacheStores.Add(1)
+					}
+				}
 				return resp, nil
 			}
 
@@ -411,13 +475,9 @@ func hasMeaningfulJSONValue(raw json.RawMessage) bool {
 	return true
 }
 
-func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath string, body []byte, stream bool, c router.Candidate, key string, adapter provider.Adapter) (*http.Response, error) {
+func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath string, patched []byte, stream bool, c router.Candidate, key string, adapter provider.Adapter) (*http.Response, error) {
 	p := st.cfg.Providers[c.Provider]
 	target, err := targetURL(p.BaseURL, targetPath, original.URL.RawQuery)
-	if err != nil {
-		return nil, err
-	}
-	patched, err := patchModelRequest(body, c.UpstreamModel, st.cfg.Models[c.Alias].Params)
 	if err != nil {
 		return nil, err
 	}
@@ -455,6 +515,64 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 		resp.Body = &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}
 	}
 	return resp, nil
+}
+
+func cacheAllowsProviderKind(cfg config.ResponseCache, kind string) bool {
+	for _, allowed := range cfg.ProviderKinds {
+		if strings.EqualFold(strings.TrimSpace(allowed), kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestAllowsResponseCache(body []byte) bool {
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal(body, &request); err != nil {
+		return false
+	}
+	for _, field := range []string{"tools", "tool_choice", "functions", "function_call"} {
+		if raw, ok := request[field]; ok && hasMeaningfulJSONValue(raw) {
+			return false
+		}
+	}
+	return true
+}
+
+func cachedResponse(cached responsecache.Response) *http.Response {
+	return &http.Response{
+		StatusCode:    cached.StatusCode,
+		Header:        cached.Header,
+		Body:          io.NopCloser(bytes.NewReader(cached.Body)),
+		ContentLength: int64(len(cached.Body)),
+	}
+}
+
+func snapshotResponse(resp *http.Response, maxBytes int64) (responsecache.Response, bool, error) {
+	original := resp.Body
+	data, err := io.ReadAll(io.LimitReader(original, maxBytes+1))
+	if err != nil {
+		resp.Body = &replayReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(data), original),
+			closer: original,
+		}
+		return responsecache.Response{}, false, err
+	}
+	if int64(len(data)) > maxBytes {
+		resp.Body = &replayReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(data), original),
+			closer: original,
+		}
+		return responsecache.Response{}, false, nil
+	}
+
+	_ = original.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(data))
+	return responsecache.Response{
+		StatusCode: resp.StatusCode,
+		Header:     resp.Header.Clone(),
+		Body:       data,
+	}, true, nil
 }
 
 func (s *Server) copyResponse(w http.ResponseWriter, resp *http.Response, stream bool) {

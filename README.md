@@ -17,6 +17,8 @@ Alvus Core is a reliability-first local inference gateway for OpenAI-compatible 
 - Optional proxy and admin authentication.
 - `/healthz`, `/readyz`, `/metrics` and `/v1/models`.
 - JSON structured logs.
+- Optional bounded in-memory response cache, scoped to selected provider kinds (NVIDIA by default).
+- Cache hit/miss/store metrics without persisting prompts, responses or credentials to disk.
 - Race-detector tests in CI.
 
 ## Configuration
@@ -69,6 +71,29 @@ ALVUS_REQUEST_TIMEOUT
 ```
 
 Provider credentials are resolved through each provider's `api_key_env` field.
+
+### Response cache
+
+The response cache is opt-in and disabled by default. The built-in defaults target NVIDIA providers only, keep entries in process memory, expire them after one hour, cap the cache at 256 entries / 64 MiB total body bytes, and skip individual responses larger than 1 MiB.
+
+```json
+{
+  "cache": {
+    "responses": {
+      "enabled": true,
+      "ttl": "1h",
+      "max_entries": 256,
+      "max_body_bytes": 1048576,
+      "max_bytes": 67108864,
+      "provider_kinds": ["nvidia"]
+    }
+  }
+}
+```
+
+Only successful non-streaming `/v1/chat/completions` responses are eligible. Requests that expose tool/function calling fields bypass the response cache, preventing cached tool calls from replaying agent actions. Cache keys include provider, resolved upstream model, HTTP method, path/query and the fully patched request body, so model defaults and request parameters participate in identity. Streaming remains pass-through. Entries are discarded on process restart or configuration reload; no prompts, responses, hashes or provider credentials are written to disk.
+
+Operational counters are exposed through `/metrics`: `cache_hits`, `cache_misses`, `cache_stores`, `cache_entries`, `cache_bytes`, `cache_hit_rate`, and `response_cache_on`.
 
 ## NVIDIA quality routes
 

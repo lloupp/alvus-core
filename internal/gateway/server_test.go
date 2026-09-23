@@ -207,3 +207,119 @@ func TestModelDefaultsApplyWithoutOverridingClient(t *testing.T) {
 		t.Fatal("model defaults were not applied")
 	}
 }
+
+func TestNVIDIAResponseCacheAvoidsRepeatedUpstreamCall(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"cached"},"finish_reason":"stop"}]}`))
+	}))
+	defer up.Close()
+
+	cfg := baseConfig(up.URL + "/v1")
+	p := cfg.Providers["p"]
+	p.Kind = "nvidia"
+	cfg.Providers["p"] = p
+	cfg.Cache.Responses.Enabled = true
+	cfg.Cache.Responses.TTL = config.Duration{Duration: time.Minute}
+	cfg.Cache.Responses.MaxEntries = 16
+	cfg.Cache.Responses.MaxBodyBytes = 1 << 20
+	cfg.Cache.Responses.MaxBytes = 4 << 20
+
+	s := New(cfg, nil)
+	body := `{"model":"a","messages":[{"role":"user","content":"same"}]}`
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls=%d, want 1", calls.Load())
+	}
+	if s.metrics.CacheHits.Load() != 1 || s.metrics.CacheMisses.Load() != 1 || s.metrics.CacheStores.Load() != 1 {
+		t.Fatalf("cache metrics hits=%d misses=%d stores=%d", s.metrics.CacheHits.Load(), s.metrics.CacheMisses.Load(), s.metrics.CacheStores.Load())
+	}
+}
+
+func TestResponseCacheKeyIncludesRequestBody(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer up.Close()
+
+	cfg := baseConfig(up.URL + "/v1")
+	p := cfg.Providers["p"]
+	p.Kind = "nvidia"
+	cfg.Providers["p"] = p
+	cfg.Cache.Responses.Enabled = true
+
+	s := New(cfg, nil)
+	for _, content := range []string{"one", "two"} {
+		body := `{"model":"a","messages":[{"role":"user","content":"` + content + `"}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("content=%s status=%d body=%s", content, rec.Code, rec.Body.String())
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want 2", calls.Load())
+	}
+}
+
+func TestResponseCacheBypassesStreamingAndOtherProviderKinds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+		body string
+	}{
+		{name: "streaming", kind: "nvidia", body: `{"model":"a","messages":[],"stream":true}`},
+		{name: "tool-calling", kind: "nvidia", body: `{"model":"a","messages":[],"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object"}}}]}`},
+		{name: "other-provider", kind: "openai", body: `{"model":"a","messages":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if strings.Contains(tc.body, `"stream":true`) {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = w.Write([]byte("data: done\\n\\n"))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer up.Close()
+
+			cfg := baseConfig(up.URL + "/v1")
+			p := cfg.Providers["p"]
+			p.Kind = tc.kind
+			cfg.Providers["p"] = p
+			cfg.Cache.Responses.Enabled = true
+			s := New(cfg, nil)
+
+			for i := 0; i < 2; i++ {
+				req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tc.body))
+				rec := httptest.NewRecorder()
+				s.Handler().ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("request %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("upstream calls=%d, want 2", calls.Load())
+			}
+			if s.metrics.CacheHits.Load() != 0 || s.metrics.CacheMisses.Load() != 0 {
+				t.Fatalf("unexpected cache activity hits=%d misses=%d", s.metrics.CacheHits.Load(), s.metrics.CacheMisses.Load())
+			}
+		})
+	}
+}
