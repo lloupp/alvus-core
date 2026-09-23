@@ -255,6 +255,7 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		"cache_hit_rate":    hitRate,
 		"response_cache_on": st.responseCache != nil,
 		"circuits":          st.router.Snapshot(time.Now()),
+		"models":            s.modelMetricsSnapshot(),
 	})
 }
 
@@ -300,6 +301,82 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	s.copyResponse(w, resp, probe.Stream)
 }
 
+func (s *Server) recordModelAttempt(alias string, latency time.Duration, status int, success, timeout bool, reason string) {
+	s.modelMetricsMu.Lock()
+	defer s.modelMetricsMu.Unlock()
+	m := s.modelMetrics[alias]
+	if m == nil {
+		m = &modelMetric{}
+		s.modelMetrics[alias] = m
+	}
+	m.Attempts++
+	if success {
+		m.Successes++
+	} else {
+		m.Failures++
+	}
+	if timeout {
+		m.Timeouts++
+	}
+	m.TotalLatency += latency
+	m.LastLatency = latency
+	m.LastStatusCode = status
+	if reason != "" {
+		m.LastReason = reason
+	}
+}
+
+func (s *Server) recordModelFallback(alias, reason string) {
+	if alias == "" {
+		return
+	}
+	s.modelMetricsMu.Lock()
+	defer s.modelMetricsMu.Unlock()
+	m := s.modelMetrics[alias]
+	if m == nil {
+		m = &modelMetric{}
+		s.modelMetrics[alias] = m
+	}
+	m.Fallbacks++
+	if reason != "" {
+		m.LastReason = reason
+	}
+}
+
+func (s *Server) modelMetricsSnapshot() map[string]map[string]any {
+	s.modelMetricsMu.Lock()
+	defer s.modelMetricsMu.Unlock()
+	out := make(map[string]map[string]any, len(s.modelMetrics))
+	for alias, m := range s.modelMetrics {
+		var avgMs float64
+		var successRate float64
+		if m.Attempts > 0 {
+			avgMs = float64(m.TotalLatency.Microseconds()) / 1000 / float64(m.Attempts)
+			successRate = float64(m.Successes) / float64(m.Attempts)
+		}
+		out[alias] = map[string]any{
+			"attempts":        m.Attempts,
+			"successes":       m.Successes,
+			"failures":        m.Failures,
+			"timeouts":        m.Timeouts,
+			"fallbacks":       m.Fallbacks,
+			"success_rate":    successRate,
+			"avg_latency_ms":  avgMs,
+			"last_latency_ms": float64(m.LastLatency.Microseconds()) / 1000,
+			"last_status":     m.LastStatusCode,
+			"last_reason":     m.LastReason,
+		}
+	}
+	return out
+}
+
+func effectiveAttemptTimeout(modelTimeout, requestTimeout time.Duration) time.Duration {
+	if modelTimeout <= 0 || modelTimeout > requestTimeout {
+		return requestTimeout
+	}
+	return modelTimeout
+}
+
 func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPath string, body []byte, stream bool, requestedModel string) (*http.Response, error) {
 	candidates, err := st.router.Candidates(requestedModel, time.Now())
 	if err != nil || len(candidates) == 0 {
@@ -309,6 +386,7 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 	for ci, candidate := range candidates {
 		if ci > 0 {
 			s.metrics.Fallbacks.Add(1)
+			s.recordModelFallback(candidates[ci-1].Alias, "route_fallback")
 		}
 		pool := st.pools[candidate.Provider]
 		adapter := st.adapters[candidate.Provider]
@@ -316,7 +394,9 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 			continue
 		}
 
-		patched, err := patchModelRequest(body, candidate.UpstreamModel, st.cfg.Models[candidate.Alias].Params)
+		modelCfg := st.cfg.Models[candidate.Alias]
+		attemptTimeout := effectiveAttemptTimeout(modelCfg.AttemptTimeout.Duration, st.cfg.RequestTimeout.Duration)
+		patched, err := patchModelRequest(body, candidate.UpstreamModel, modelCfg.Params)
 		if err != nil {
 			return nil, err
 		}
@@ -343,8 +423,22 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 				break
 			}
 			s.metrics.Attempts.Add(1)
-			resp, err := s.doAttempt(st, original, targetPath, patched, stream, candidate, key, adapter)
+			started := time.Now()
+			resp, err := s.doAttempt(st, original, targetPath, patched, stream, candidate, key, adapter, attemptTimeout)
+			latency := time.Since(started)
 			if err != nil {
+				if original.Context().Err() != nil {
+					s.recordModelAttempt(candidate.Alias, latency, 0, false, false, "client_canceled")
+					return nil, original.Context().Err()
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					s.recordModelAttempt(candidate.Alias, latency, 0, false, true, "attempt_timeout")
+					st.router.Failure(candidate.Alias, "attempt_timeout", time.Now(), 0)
+					s.log.Warn("model attempt timed out; falling back", "provider", candidate.Provider, "model", candidate.Alias, "timeout", attemptTimeout)
+					keyAttempt = maxKeyAttempts
+					continue
+				}
+				s.recordModelAttempt(candidate.Alias, latency, 0, false, false, "upstream_error")
 				pool.Cooldown(idx, time.Now().Add(5*time.Second))
 				s.log.Warn("upstream request failed", "provider", candidate.Provider, "model", candidate.Alias, "error", err)
 				continue
@@ -352,19 +446,24 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				if !stream && targetPath == "/v1/chat/completions" {
 					useful, reason, probeErr := probeChatCompletion(resp)
+					latency = time.Since(started)
 					if probeErr != nil {
-						pool.Cooldown(idx, time.Now().Add(5*time.Second))
+						s.recordModelAttempt(candidate.Alias, latency, resp.StatusCode, false, false, "invalid_success_response")
+						st.router.Failure(candidate.Alias, "invalid_success_response", time.Now(), 0)
 						s.log.Warn("failed to validate successful upstream response", "provider", candidate.Provider, "model", candidate.Alias, "error", probeErr)
+						keyAttempt = maxKeyAttempts
 						continue
 					}
 					if !useful {
 						_ = resp.Body.Close()
+						s.recordModelAttempt(candidate.Alias, latency, resp.StatusCode, false, false, reason)
 						st.router.Failure(candidate.Alias, reason, time.Now(), 0)
 						s.log.Warn("upstream returned unusable success response; falling back", "provider", candidate.Provider, "model", candidate.Alias, "reason", reason)
 						keyAttempt = maxKeyAttempts
 						continue
 					}
 				}
+				s.recordModelAttempt(candidate.Alias, latency, resp.StatusCode, true, false, "")
 				st.router.Success(candidate.Alias)
 				if cacheable {
 					cached, ok, cacheErr := snapshotResponse(resp, st.cfg.Cache.Responses.MaxBodyBytes)
@@ -380,6 +479,7 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 			resp.Body.Close()
 			decision := adapter.Classify(resp.StatusCode, errBody, resp.Header)
+			s.recordModelAttempt(candidate.Alias, time.Since(started), resp.StatusCode, false, false, decision.Reason)
 			s.log.Warn("upstream rejected request", "provider", candidate.Provider, "kind", adapter.Kind(), "model", candidate.Alias, "status", resp.StatusCode, "action", decision.Action)
 			switch decision.Action {
 			case provider.DisableKey:
@@ -490,7 +590,7 @@ func hasMeaningfulJSONValue(raw json.RawMessage) bool {
 	return true
 }
 
-func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath string, patched []byte, stream bool, c router.Candidate, key string, adapter provider.Adapter) (*http.Response, error) {
+func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath string, patched []byte, stream bool, c router.Candidate, key string, adapter provider.Adapter, attemptTimeout time.Duration) (*http.Response, error) {
 	p := st.cfg.Providers[c.Provider]
 	target, err := targetURL(p.BaseURL, targetPath, original.URL.RawQuery)
 	if err != nil {
@@ -499,11 +599,18 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 
 	ctx := original.Context()
 	var cancel context.CancelFunc
-	if !stream {
-		ctx, cancel = context.WithTimeout(ctx, st.cfg.RequestTimeout.Duration)
+	var headerTimer *time.Timer
+	if stream {
+		ctx, cancel = context.WithCancel(ctx)
+		headerTimer = time.AfterFunc(attemptTimeout, cancel)
+	} else {
+		ctx, cancel = context.WithTimeout(ctx, attemptTimeout)
 	}
 	req, err := http.NewRequestWithContext(ctx, original.Method, target, bytes.NewReader(patched))
 	if err != nil {
+		if headerTimer != nil {
+			headerTimer.Stop()
+		}
 		if cancel != nil {
 			cancel()
 		}
@@ -520,6 +627,15 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 		client = s.streamClient
 	}
 	resp, err := client.Do(req)
+	if headerTimer != nil {
+		if !headerTimer.Stop() && ctx.Err() != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			cancel()
+			return nil, context.DeadlineExceeded
+		}
+	}
 	if err != nil {
 		if cancel != nil {
 			cancel()
