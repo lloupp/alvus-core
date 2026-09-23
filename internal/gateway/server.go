@@ -600,9 +600,13 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 	ctx := original.Context()
 	var cancel context.CancelFunc
 	var headerTimer *time.Timer
+	var headerTimedOut atomic.Bool
 	if stream {
 		ctx, cancel = context.WithCancel(ctx)
-		headerTimer = time.AfterFunc(attemptTimeout, cancel)
+		headerTimer = time.AfterFunc(attemptTimeout, func() {
+			headerTimedOut.Store(true)
+			cancel()
+		})
 	} else {
 		ctx, cancel = context.WithTimeout(ctx, attemptTimeout)
 	}
@@ -628,19 +632,23 @@ func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath 
 	}
 	resp, err := client.Do(req)
 	if headerTimer != nil {
-		if !headerTimer.Stop() && ctx.Err() != nil {
-			if resp != nil && resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			cancel()
-			return nil, context.DeadlineExceeded
-		}
+		headerTimer.Stop()
 	}
 	if err != nil {
 		if cancel != nil {
 			cancel()
 		}
+		if headerTimedOut.Load() && original.Context().Err() == nil {
+			return nil, context.DeadlineExceeded
+		}
 		return nil, err
+	}
+	if headerTimedOut.Load() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		return nil, context.DeadlineExceeded
 	}
 	if cancel != nil {
 		resp.Body = &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}
