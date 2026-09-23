@@ -23,7 +23,10 @@ import (
 	"github.com/lloupp/alvus-core/internal/router"
 )
 
-const maxErrorBody = 1 << 20
+const (
+	maxErrorBody          = 1 << 20
+	maxSemanticProbeBody = 8 << 20
+)
 
 type Metrics struct {
 	Requests  atomic.Uint64
@@ -51,6 +54,13 @@ func (c *cancelReadCloser) Close() error {
 	c.once.Do(c.cancel)
 	return err
 }
+
+type replayReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *replayReadCloser) Close() error { return r.closer.Close() }
 
 type Server struct {
 	state        atomic.Pointer[runtimeState]
@@ -268,7 +278,22 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 				s.log.Warn("upstream request failed", "provider", candidate.Provider, "model", candidate.Alias, "error", err)
 				continue
 			}
-			if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				if !stream && targetPath == "/v1/chat/completions" {
+					useful, reason, probeErr := probeChatCompletion(resp)
+					if probeErr != nil {
+						pool.Cooldown(idx, time.Now().Add(5*time.Second))
+						s.log.Warn("failed to validate successful upstream response", "provider", candidate.Provider, "model", candidate.Alias, "error", probeErr)
+						continue
+					}
+					if !useful {
+						_ = resp.Body.Close()
+						st.router.Failure(candidate.Alias, reason, time.Now(), 0)
+						s.log.Warn("upstream returned unusable success response; falling back", "provider", candidate.Provider, "model", candidate.Alias, "reason", reason)
+						keyAttempt = maxKeyAttempts
+						continue
+					}
+				}
 				st.router.Success(candidate.Alias)
 				return resp, nil
 			}
@@ -299,6 +324,91 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 		}
 	}
 	return nil, errors.New("all routes exhausted")
+}
+
+func probeChatCompletion(resp *http.Response) (bool, string, error) {
+	original := resp.Body
+	data, err := io.ReadAll(io.LimitReader(original, maxSemanticProbeBody+1))
+	if err != nil {
+		_ = original.Close()
+		return false, "read_success_response", err
+	}
+	if len(data) > maxSemanticProbeBody {
+		resp.Body = &replayReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(data), original),
+			closer: original,
+		}
+		return true, "", nil
+	}
+
+	_ = original.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(data))
+
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content      json.RawMessage   `json:"content"`
+				Refusal      json.RawMessage   `json:"refusal"`
+				ToolCalls    []json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage   `json:"function_call"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil || len(out.Choices) == 0 {
+		return false, "invalid_success_response", nil
+	}
+
+	choice := out.Choices[0]
+	if choice.FinishReason == "content_filter" {
+		return true, "", nil
+	}
+	if hasMeaningfulContent(choice.Message.Content) ||
+		hasMeaningfulJSONValue(choice.Message.Refusal) ||
+		len(choice.Message.ToolCalls) > 0 ||
+		hasMeaningfulJSONValue(choice.Message.FunctionCall) {
+		return true, "", nil
+	}
+	return false, "empty_success_response", nil
+}
+
+func hasMeaningfulContent(raw json.RawMessage) bool {
+	if !hasMeaningfulJSONValue(raw) {
+		return false
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return strings.TrimSpace(text) != ""
+	}
+	var blocks []map[string]any
+	if json.Unmarshal(raw, &blocks) != nil {
+		return true
+	}
+	for _, block := range blocks {
+		if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" {
+			return true
+		}
+		if typ, ok := block["type"].(string); ok && typ != "" && typ != "text" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMeaningfulJSONValue(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 ||
+		bytes.Equal(trimmed, []byte("null")) ||
+		bytes.Equal(trimmed, []byte(`""`)) ||
+		bytes.Equal(trimmed, []byte("[]")) ||
+		bytes.Equal(trimmed, []byte("{}")) {
+		return false
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) == nil {
+		return strings.TrimSpace(text) != ""
+	}
+	return true
 }
 
 func (s *Server) doAttempt(st *runtimeState, original *http.Request, targetPath string, body []byte, stream bool, c router.Candidate, key string, adapter provider.Adapter) (*http.Response, error) {
