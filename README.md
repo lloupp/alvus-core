@@ -157,7 +157,7 @@ Once the gateway is running with provider credentials already configured in its 
 python3 scripts/backend-readiness.py
 ```
 
-The default `quick` mode checks health/readiness, `auto`/`fast`/`coding`/`reasoning`, OpenAI streaming, a two-turn tool call, three consecutive `auto` calls, direct Super/Ultra diagnostics, HTTP 200 empty responses, latency thresholds and per-model metrics.
+The default `quick` mode checks health/readiness, `auto`/`fast`/`coding`/`reasoning`, OpenAI streaming, a two-turn tool call, three consecutive `auto` calls, direct Super/Ultra diagnostics, HTTP 200 empty responses, latency thresholds and per-model metrics. Backend transport reliability and model instruction-following are reported separately: direct-model readiness requires useful HTTP 200 responses, while repeated `auto` calls also enforce an instruction-following rate (80% by default).
 
 For the longer battery:
 
