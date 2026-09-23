@@ -17,9 +17,10 @@ const (
 	DefaultRequestTimeout  = 300 * time.Second
 	DefaultFailureLimit       = 3
 	DefaultCircuitCooldown    = 60 * time.Second
-	DefaultResponseCacheTTL   = time.Hour
-	DefaultResponseCacheSize  = 1024
-	DefaultResponseCacheBytes = int64(8 << 20)
+	DefaultResponseCacheTTL      = time.Hour
+	DefaultResponseCacheSize     = 256
+	DefaultResponseCacheBodySize = int64(1 << 20)
+	DefaultResponseCacheBytes    = int64(64 << 20)
 )
 
 type Duration struct{ time.Duration }
@@ -63,6 +64,7 @@ type ResponseCache struct {
 	TTL           Duration `json:"ttl"`
 	MaxEntries    int      `json:"max_entries"`
 	MaxBodyBytes  int64    `json:"max_body_bytes"`
+	MaxBytes      int64    `json:"max_bytes"`
 	ProviderKinds []string `json:"provider_kinds,omitempty"`
 }
 
@@ -94,10 +96,11 @@ func Defaults() Config {
 		},
 		Cache: Cache{
 			Responses: ResponseCache{
-			TTL:           Duration{DefaultResponseCacheTTL},
-			MaxEntries:    DefaultResponseCacheSize,
-			MaxBodyBytes:  DefaultResponseCacheBytes,
-			ProviderKinds: []string{"nvidia"},
+				TTL:           Duration{DefaultResponseCacheTTL},
+				MaxEntries:    DefaultResponseCacheSize,
+				MaxBodyBytes:  DefaultResponseCacheBodySize,
+				MaxBytes:      DefaultResponseCacheBytes,
+				ProviderKinds: []string{"nvidia"},
 			},
 		},
 		Providers: map[string]Provider{},
@@ -210,6 +213,12 @@ func (c Config) Validate() error {
 		}
 		if c.Cache.Responses.MaxBodyBytes <= 0 {
 			return errors.New("cache.responses.max_body_bytes must be > 0")
+		}
+		if c.Cache.Responses.MaxBytes <= 0 {
+			return errors.New("cache.responses.max_bytes must be > 0")
+		}
+		if c.Cache.Responses.MaxBodyBytes > c.Cache.Responses.MaxBytes {
+			return errors.New("cache.responses.max_body_bytes must be <= cache.responses.max_bytes")
 		}
 		if len(c.Cache.Responses.ProviderKinds) == 0 {
 			return errors.New("cache.responses.provider_kinds must not be empty")
