@@ -52,6 +52,49 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 	}
 }
 
+func TestProviderCapacityFallbackDoesNotCooldownCredential(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		calls.Add(1)
+		switch v["model"] {
+		case "real-a":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("capacity"))
+		case "real-b":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"fallback-ok"},"finish_reason":"stop"}]}`))
+		default:
+			t.Fatalf("unexpected model=%v", v["model"])
+		}
+	}))
+	defer up.Close()
+
+	cfg := baseConfig(up.URL + "/v1")
+	cfg.Providers["p"] = config.Provider{Kind: "nvidia", BaseURL: up.URL + "/v1", APIKeys: []string{"only-key"}}
+
+	s := New(cfg, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "fallback-ok") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want 2", calls.Load())
+	}
+	if got := s.state.Load().pools["p"].Available(time.Now()); got != 1 {
+		t.Fatalf("available credentials=%d, want 1 after model-capacity fallback", got)
+	}
+	snapshot := s.state.Load().router.Snapshot(time.Now())
+	if snapshot["a"]["last_reason"] != "provider capacity" {
+		t.Fatalf("circuit reason=%#v", snapshot["a"])
+	}
+}
+
 func TestPerModelTimeoutFallsBackWithoutRetryingSecondKey(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
