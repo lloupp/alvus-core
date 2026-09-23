@@ -104,11 +104,13 @@ The default NVIDIA-only example exposes task-oriented routes:
 - `quality`: Kimi-K3 → GLM-5.3 → Nemotron 3 Ultra → Nemotron 3 Super → Nemotron 3.5 Lightning.
 - `coding`: Nemotron 3 Ultra → Nemotron 3 Super.
 - `reasoning`: Nemotron 3 Super → Nemotron 3 Ultra.
-- `fast`: Nemotron 3 Super → Nemotron 3 Ultra.
+- `fast`: Nemotron 3 Super (interactive/non-thinking) → Nemotron 3 Ultra.
 - `vision`: Kimi-K3 → GLM-5.3 Flash.
-- `auto` / `default`: Nemotron 3 Super → Nemotron 3 Ultra.
+- `auto` / `default`: Nemotron 3 Super (interactive/non-thinking) → Nemotron 3 Ultra.
 
-Interactive agent routes intentionally stay on the two candidates that remained reachable and useful in the latest live backend battery. In that run, `auto` and `fast` completed in about 1–2 seconds, `coding` in about 7 seconds, and direct Nemotron Super succeeded in about 2 seconds. GLM-5.3, Kimi-K3 and Nemotron 3.5 Lightning returned 503/timeouts during the same battery, so they no longer extend the latency tail of general agent requests. They remain configured for direct use, and the slower frontier models remain available through `quality`. GLM-5.3 Flash remains outside general routes after its isolated validation failed.
+The same Super upstream is exposed through two aliases: `nemotron_super_interactive` disables thinking and enables non-empty agent content for `auto`/`fast`, while `nemotron_super` keeps thinking enabled for `reasoning` and higher-effort fallbacks. This avoids paying reasoning-token overhead on ordinary backend traffic without removing the stronger reasoning profile.
+
+Interactive agent routes intentionally stay on the two candidates that remained reachable and useful in the latest live backend battery. In that run, `auto` and `fast` completed in about 1–2 seconds, `coding` in about 7 seconds, and the route layer maintained useful transport across all ten stability calls. GLM-5.3, Kimi-K3 and Nemotron 3.5 Lightning returned 503/timeouts during the same battery, so they no longer extend the latency tail of general agent requests. They remain configured for direct use, and the slower frontier models remain available through `quality`. GLM-5.3 Flash remains outside general routes after its isolated validation failed.
 
 Model entries can define `params`. These are applied as defaults after routing, while explicit client parameters win. This lets Alvus Core request a model's preferred reasoning mode without forcing Pi Agent, Claude-compatible clients or OpenAI-compatible clients to know provider-specific knobs.
 
@@ -157,7 +159,7 @@ Once the gateway is running with provider credentials already configured in its 
 python3 scripts/backend-readiness.py
 ```
 
-The default `quick` mode checks health/readiness, `auto`/`fast`/`coding`/`reasoning`, OpenAI streaming, a two-turn tool call, three consecutive `auto` calls, direct Super/Ultra diagnostics, HTTP 200 empty responses, latency thresholds and per-model metrics. Backend transport reliability and model instruction-following are reported separately: direct-model readiness requires useful HTTP 200 responses, while repeated `auto` calls also enforce an instruction-following rate (80% by default).
+The default `quick` mode checks health/readiness, `auto`/`fast`/`coding`/`reasoning`, OpenAI streaming, a two-turn tool call, three consecutive `auto` calls, direct Super/Ultra diagnostics, HTTP 200 empty responses, latency thresholds and per-model metrics. Backend transport reliability and model instruction-following are reported separately. Direct-model probes are diagnostic only; the readiness verdict is driven by routed traffic, streaming, tool calling, repeated `auto` reliability, latency and instruction-following. This matches the gateway's purpose: a transient failure of one upstream model should not fail the backend when routing/fallback continues to work.
 
 For the longer battery:
 
