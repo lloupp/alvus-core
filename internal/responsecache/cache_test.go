@@ -8,13 +8,15 @@ import (
 
 func TestMemorySetGetExpiryAndCloning(t *testing.T) {
 	now := time.Unix(100, 0)
-	cache := NewMemory(2)
+	cache := NewMemory(2, 1024)
 	value := Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": {"application/json"}},
 		Body:       []byte("one"),
 	}
-	cache.Set("a", value, time.Minute, now)
+	if !cache.Set("a", value, time.Minute, now) {
+		t.Fatal("expected cache store")
+	}
 
 	value.Header.Set("Content-Type", "mutated")
 	value.Body[0] = 'x'
@@ -37,23 +39,39 @@ func TestMemorySetGetExpiryAndCloning(t *testing.T) {
 	if _, ok := cache.Get("a", now.Add(time.Minute)); ok {
 		t.Fatal("expired entry returned as hit")
 	}
+	if got := cache.Bytes(now.Add(time.Minute)); got != 0 {
+		t.Fatalf("bytes=%d, want 0 after expiry", got)
+	}
 }
 
-func TestMemoryEvictsEarliestExpiry(t *testing.T) {
+func TestMemoryEvictsForEntryAndByteBudgets(t *testing.T) {
 	now := time.Unix(200, 0)
-	cache := NewMemory(2)
-	cache.Set("a", Response{Body: []byte("a")}, time.Minute, now)
-	cache.Set("b", Response{Body: []byte("b")}, 2*time.Minute, now)
-	cache.Set("c", Response{Body: []byte("c")}, 3*time.Minute, now)
+	cache := NewMemory(2, 5)
+	if !cache.Set("a", Response{Body: []byte("aa")}, time.Minute, now) {
+		t.Fatal("store a failed")
+	}
+	if !cache.Set("b", Response{Body: []byte("bb")}, 2*time.Minute, now) {
+		t.Fatal("store b failed")
+	}
+	if !cache.Set("c", Response{Body: []byte("ccc")}, 3*time.Minute, now) {
+		t.Fatal("store c failed")
+	}
 
 	if _, ok := cache.Get("a", now); ok {
-		t.Fatal("earliest expiry was not evicted")
+		t.Fatal("earliest entry was not evicted")
 	}
 	if _, ok := cache.Get("b", now); !ok {
 		t.Fatal("expected b to remain")
 	}
 	if _, ok := cache.Get("c", now); !ok {
 		t.Fatal("expected c to remain")
+	}
+	if got := cache.Bytes(now); got != 5 {
+		t.Fatalf("bytes=%d, want 5", got)
+	}
+
+	if cache.Set("too-large", Response{Body: []byte("123456")}, time.Minute, now) {
+		t.Fatal("oversized entry should not be stored")
 	}
 }
 
