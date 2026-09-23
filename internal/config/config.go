@@ -12,11 +12,11 @@ import (
 )
 
 const (
-	DefaultListen          = "127.0.0.1:3000"
-	DefaultBodyLimit       = int64(64 << 20)
-	DefaultRequestTimeout  = 300 * time.Second
-	DefaultFailureLimit       = 3
-	DefaultCircuitCooldown    = 60 * time.Second
+	DefaultListen                = "127.0.0.1:3000"
+	DefaultBodyLimit             = int64(64 << 20)
+	DefaultRequestTimeout        = 300 * time.Second
+	DefaultFailureLimit          = 3
+	DefaultCircuitCooldown       = 60 * time.Second
 	DefaultResponseCacheTTL      = time.Hour
 	DefaultResponseCacheSize     = 256
 	DefaultResponseCacheBodySize = int64(1 << 20)
