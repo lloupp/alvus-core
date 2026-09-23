@@ -132,6 +132,44 @@ func TestStreamingHeaderTimeoutFallsBack(t *testing.T) {
 	}
 }
 
+func TestRequestTimeoutBoundsEntireFallbackChain(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-r.Context().Done()
+	}))
+	defer up.Close()
+
+	cfg := baseConfig(up.URL + "/v1")
+	cfg.RequestTimeout = config.Duration{Duration: 150 * time.Millisecond}
+	for _, alias := range []string{"a", "b"} {
+		m := cfg.Models[alias]
+		m.AttemptTimeout = config.Duration{Duration: 120 * time.Millisecond}
+		cfg.Models[alias] = m
+	}
+
+	s := New(cfg, nil)
+	started := time.Now()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	elapsed := time.Since(started)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want 2", calls.Load())
+	}
+	if elapsed >= 220*time.Millisecond {
+		t.Fatalf("fallback chain exceeded total request budget: %s", elapsed)
+	}
+	stats := s.modelMetricsSnapshot()
+	if stats["a"]["timeouts"] != uint64(1) || stats["b"]["timeouts"] != uint64(1) {
+		t.Fatalf("metrics=%#v", stats)
+	}
+}
+
 func TestFallbackOnEmptySuccessfulCompletion(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
