@@ -378,6 +378,7 @@ func effectiveAttemptTimeout(modelTimeout, requestTimeout time.Duration) time.Du
 }
 
 func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPath string, body []byte, stream bool, requestedModel string) (*http.Response, error) {
+	routeDeadline := time.Now().Add(st.cfg.RequestTimeout.Duration)
 	candidates, err := st.router.Candidates(requestedModel, time.Now())
 	if err != nil || len(candidates) == 0 {
 		return nil, fmt.Errorf("%s", errString(err, "no healthy route"))
@@ -395,7 +396,11 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 		}
 
 		modelCfg := st.cfg.Models[candidate.Alias]
-		attemptTimeout := effectiveAttemptTimeout(modelCfg.AttemptTimeout.Duration, st.cfg.RequestTimeout.Duration)
+		remaining := time.Until(routeDeadline)
+		if remaining <= 0 {
+			return nil, context.DeadlineExceeded
+		}
+		attemptTimeout := effectiveAttemptTimeout(modelCfg.AttemptTimeout.Duration, remaining)
 		patched, err := patchModelRequest(body, candidate.UpstreamModel, modelCfg.Params)
 		if err != nil {
 			return nil, err
