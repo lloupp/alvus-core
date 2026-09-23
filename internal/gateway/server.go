@@ -40,6 +40,18 @@ type Metrics struct {
 	CacheStores atomic.Uint64
 }
 
+type modelMetric struct {
+	Attempts       uint64
+	Successes      uint64
+	Failures       uint64
+	Timeouts       uint64
+	Fallbacks      uint64
+	TotalLatency   time.Duration
+	LastLatency    time.Duration
+	LastReason     string
+	LastStatusCode int
+}
+
 type runtimeState struct {
 	cfg           config.Config
 	router        *router.Router
@@ -73,6 +85,8 @@ type Server struct {
 	streamClient *http.Client
 	log          *slog.Logger
 	metrics      Metrics
+	modelMetricsMu sync.Mutex
+	modelMetrics   map[string]*modelMetric
 	mux          *http.ServeMux
 }
 
@@ -93,6 +107,7 @@ func New(cfg config.Config, logger *slog.Logger) *Server {
 		client:       &http.Client{Transport: transport, CheckRedirect: noRedirect},
 		streamClient: &http.Client{Transport: transport.Clone(), CheckRedirect: noRedirect},
 		log:          logger,
+		modelMetrics: map[string]*modelMetric{},
 		mux:          http.NewServeMux(),
 	}
 	st, err := buildState(cfg)
