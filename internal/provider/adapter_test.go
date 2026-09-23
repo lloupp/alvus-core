@@ -19,4 +19,10 @@ func TestProviderSpecificClassification(t *testing.T) {
 	if got := New("groq").Classify(http.StatusTooManyRequests, nil, nil).Action; got != FallbackModel {
 		t.Fatalf("groq 429=%s", got)
 	}
+	if d := New("nvidia").Classify(http.StatusServiceUnavailable, nil, nil); d.Action != FallbackModel || d.CooldownCredential {
+		t.Fatalf("nvidia 503=%+v", d)
+	}
+	if d := New("nvidia").Classify(http.StatusTooManyRequests, nil, nil); d.Action != FallbackModel || !d.CooldownCredential {
+		t.Fatalf("nvidia 429=%+v", d)
+	}
 }
