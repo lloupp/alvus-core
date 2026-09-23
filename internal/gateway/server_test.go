@@ -208,7 +208,6 @@ func TestModelDefaultsApplyWithoutOverridingClient(t *testing.T) {
 	}
 }
 
-
 func TestNVIDIAResponseCacheAvoidsRepeatedUpstreamCall(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +225,7 @@ func TestNVIDIAResponseCacheAvoidsRepeatedUpstreamCall(t *testing.T) {
 	cfg.Cache.Responses.TTL = config.Duration{Duration: time.Minute}
 	cfg.Cache.Responses.MaxEntries = 16
 	cfg.Cache.Responses.MaxBodyBytes = 1 << 20
+	cfg.Cache.Responses.MaxBytes = 4 << 20
 
 	s := New(cfg, nil)
 	body := `{"model":"a","messages":[{"role":"user","content":"same"}]}`
@@ -282,6 +282,7 @@ func TestResponseCacheBypassesStreamingAndOtherProviderKinds(t *testing.T) {
 		body string
 	}{
 		{name: "streaming", kind: "nvidia", body: `{"model":"a","messages":[],"stream":true}`},
+		{name: "tool-calling", kind: "nvidia", body: `{"model":"a","messages":[],"tools":[{"type":"function","function":{"name":"ping","parameters":{"type":"object"}}}]}`},
 		{name: "other-provider", kind: "openai", body: `{"model":"a","messages":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
