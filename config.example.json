@@ -1,7 +1,7 @@
 {
   "listen": "127.0.0.1:3000",
   "request_body_limit_bytes": 67108864,
-  "request_timeout": "300s",
+  "request_timeout": "180s",
   "circuit_breaker": {
     "failure_threshold": 3,
     "cooldown": "60s"
@@ -34,14 +34,16 @@
         "chat_template_kwargs": {
           "clear_thinking": true
         }
-      }
+      },
+      "attempt_timeout": "90s"
     },
     "kimi_k3": {
       "provider": "nvidia",
       "upstream_model": "moonshotai/kimi-k3",
       "params": {
         "reasoning_effort": "max"
-      }
+      },
+      "attempt_timeout": "120s"
     },
     "nemotron_ultra": {
       "provider": "nvidia",
@@ -50,7 +52,8 @@
         "chat_template_kwargs": {
           "enable_thinking": true
         }
-      }
+      },
+      "attempt_timeout": "60s"
     },
     "nemotron_super": {
       "provider": "nvidia",
@@ -59,7 +62,8 @@
         "chat_template_kwargs": {
           "enable_thinking": true
         }
-      }
+      },
+      "attempt_timeout": "45s"
     },
     "glm53_flash": {
       "provider": "nvidia",
@@ -69,7 +73,8 @@
         "chat_template_kwargs": {
           "clear_thinking": true
         }
-      }
+      },
+      "attempt_timeout": "45s"
     },
     "nemotron_lightning": {
       "provider": "nvidia",
@@ -78,7 +83,8 @@
         "chat_template_kwargs": {
           "enable_thinking": false
         }
-      }
+      },
+      "attempt_timeout": "60s"
     }
   },
   "routes": {
@@ -90,21 +96,20 @@
       "nemotron_lightning"
     ],
     "coding": [
-      "kimi_k3",
-      "glm53",
       "nemotron_ultra",
       "nemotron_super",
+      "kimi_k3",
+      "glm53",
       "nemotron_lightning"
     ],
     "reasoning": [
-      "glm53",
-      "kimi_k3",
       "nemotron_super",
       "nemotron_ultra",
+      "glm53",
+      "kimi_k3",
       "nemotron_lightning"
     ],
     "fast": [
-      "glm53",
       "nemotron_super",
       "nemotron_ultra",
       "nemotron_lightning"
@@ -114,17 +119,17 @@
       "glm53_flash"
     ],
     "auto": [
-      "glm53",
-      "kimi_k3",
       "nemotron_super",
       "nemotron_ultra",
+      "glm53",
+      "kimi_k3",
       "nemotron_lightning"
     ],
     "default": [
-      "glm53",
-      "kimi_k3",
       "nemotron_super",
       "nemotron_ultra",
+      "glm53",
+      "kimi_k3",
       "nemotron_lightning"
     ]
   }

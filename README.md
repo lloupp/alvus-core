@@ -8,7 +8,7 @@ Alvus Core is a reliability-first local inference gateway for OpenAI-compatible 
 - Provider adapters for generic OpenAI, NVIDIA NIM, OpenRouter, Groq and Together.
 - Provider-specific error classification instead of treating key, model and provider failures as the same thing.
 - Per-provider credential pools with round-robin selection, cooldown and invalid-key disable.
-- Ordered model routes and model-level circuit breakers.
+- Ordered model routes, model-level circuit breakers and optional per-model attempt timeouts.
 - OpenAI SSE streaming passthrough.
 - Anthropic Messages compatibility at `POST /v1/messages` including text, tools, tool results, tool choice and SSE tool-call translation.
 - `POST /v1/messages/count_tokens` transport-level token estimate for Anthropic-compatible clients. It is intentionally not presented as tokenizer-exact because providers do not share one tokenizer.
@@ -70,6 +70,8 @@ ALVUS_BODY_LIMIT_BYTES
 ALVUS_REQUEST_TIMEOUT
 ```
 
+`request_timeout` is the total budget available while Alvus Core selects/falls back between upstream models. A model can define a smaller `attempt_timeout`; the remaining total request budget always wins if it is smaller. For streaming, the attempt timeout bounds the wait for upstream response headers and does not cap an already-started stream.
+
 Provider credentials are resolved through each provider's `api_key_env` field.
 
 ### Response cache
@@ -93,20 +95,20 @@ The response cache is opt-in and disabled by default. The built-in defaults targ
 
 Only successful non-streaming `/v1/chat/completions` responses are eligible. Requests that expose tool/function calling fields bypass the response cache, preventing cached tool calls from replaying agent actions. Cache keys include provider, resolved upstream model, HTTP method, path/query and the fully patched request body, so model defaults and request parameters participate in identity. Streaming remains pass-through. Entries are discarded on process restart or configuration reload; no prompts, responses, hashes or provider credentials are written to disk.
 
-Operational counters are exposed through `/metrics`: `cache_hits`, `cache_misses`, `cache_stores`, `cache_entries`, `cache_bytes`, `cache_hit_rate`, and `response_cache_on`.
+Operational counters are exposed through `/metrics`: `cache_hits`, `cache_misses`, `cache_stores`, `cache_entries`, `cache_bytes`, `cache_hit_rate`, and `response_cache_on`. The same endpoint exposes per-model attempts, successes, failures, timeouts, fallbacks, success rate, average/last latency, last HTTP status and last failure reason under `models`.
 
 ## NVIDIA quality routes
 
 The default NVIDIA-only example exposes task-oriented routes:
 
 - `quality`: Kimi-K3 → GLM-5.3 → Nemotron 3 Ultra → Nemotron 3 Super → Nemotron 3.5 Lightning.
-- `coding`: Kimi-K3 → GLM-5.3 → Nemotron 3 Ultra → Nemotron 3 Super → Nemotron 3.5 Lightning.
-- `reasoning`: GLM-5.3 → Kimi-K3 → Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
-- `fast`: GLM-5.3 → Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
+- `coding`: Nemotron 3 Ultra → Nemotron 3 Super → Kimi-K3 → GLM-5.3 → Nemotron 3.5 Lightning.
+- `reasoning`: Nemotron 3 Super → Nemotron 3 Ultra → GLM-5.3 → Kimi-K3 → Nemotron 3.5 Lightning.
+- `fast`: Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
 - `vision`: Kimi-K3 → GLM-5.3 Flash.
-- `auto` / `default`: GLM-5.3 → Kimi-K3 → Nemotron 3 Super → Nemotron 3 Ultra → Nemotron 3.5 Lightning.
+- `auto` / `default`: Nemotron 3 Super → Nemotron 3 Ultra → GLM-5.3 → Kimi-K3 → Nemotron 3.5 Lightning.
 
-Nemotron models are intentionally kept at the end of non-vision routes. GLM-5.3 Flash is omitted from general routes because the live validation showed very high latency/timeouts; it remains only as a vision fallback.
+The default example now favors measured backend responsiveness for general agent traffic while keeping slower frontier models available in `quality` and later fallbacks. GLM-5.3 Flash remains outside general routes after isolated live validation produced only one useful HTTP 200 in eight attempts, with ~146 s latency plus a 240 s timeout. Per-model attempt budgets in the example prevent a single unhealthy or slow candidate from consuming the entire fallback window.
 
 Model entries can define `params`. These are applied as defaults after routing, while explicit client parameters win. This lets Alvus Core request a model's preferred reasoning mode without forcing Pi Agent, Claude-compatible clients or OpenAI-compatible clients to know provider-specific knobs.
 
