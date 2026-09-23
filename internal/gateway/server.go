@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	maxErrorBody          = 1 << 20
+	maxErrorBody         = 1 << 20
 	maxSemanticProbeBody = 8 << 20
 )
 
