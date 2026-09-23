@@ -74,7 +74,7 @@ Provider credentials are resolved through each provider's `api_key_env` field.
 
 ### Response cache
 
-The response cache is opt-in and disabled by default. The built-in defaults target NVIDIA providers only, keep entries in process memory, expire them after one hour, cap the cache at 1024 entries, and skip responses larger than 8 MiB.
+The response cache is opt-in and disabled by default. The built-in defaults target NVIDIA providers only, keep entries in process memory, expire them after one hour, cap the cache at 256 entries / 64 MiB total body bytes, and skip individual responses larger than 1 MiB.
 
 ```json
 {
@@ -82,17 +82,18 @@ The response cache is opt-in and disabled by default. The built-in defaults targ
     "responses": {
       "enabled": true,
       "ttl": "1h",
-      "max_entries": 1024,
-      "max_body_bytes": 8388608,
+      "max_entries": 256,
+      "max_body_bytes": 1048576,
+      "max_bytes": 67108864,
       "provider_kinds": ["nvidia"]
     }
   }
 }
 ```
 
-Only successful non-streaming `/v1/chat/completions` responses are eligible. Cache keys include provider, resolved upstream model, HTTP method, path/query and the fully patched request body, so model defaults and request parameters participate in identity. Streaming remains pass-through. Entries are discarded on process restart or configuration reload; no prompts, responses, hashes or provider credentials are written to disk.
+Only successful non-streaming `/v1/chat/completions` responses are eligible. Requests that expose tool/function calling fields bypass the response cache, preventing cached tool calls from replaying agent actions. Cache keys include provider, resolved upstream model, HTTP method, path/query and the fully patched request body, so model defaults and request parameters participate in identity. Streaming remains pass-through. Entries are discarded on process restart or configuration reload; no prompts, responses, hashes or provider credentials are written to disk.
 
-Operational counters are exposed through `/metrics`: `cache_hits`, `cache_misses`, `cache_stores`, `cache_entries`, `cache_hit_rate`, and `response_cache_on`.
+Operational counters are exposed through `/metrics`: `cache_hits`, `cache_misses`, `cache_stores`, `cache_entries`, `cache_bytes`, `cache_hit_rate`, and `response_cache_on`.
 
 ## NVIDIA quality routes
 
