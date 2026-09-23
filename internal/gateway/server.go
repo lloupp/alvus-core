@@ -227,19 +227,19 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		cacheBytes = st.responseCache.Bytes(now)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"requests":            s.metrics.Requests.Load(),
-		"upstream_attempts":   s.metrics.Attempts.Load(),
-		"fallbacks":           s.metrics.Fallbacks.Load(),
-		"errors":              s.metrics.Errors.Load(),
-		"reloads":             s.metrics.Reloads.Load(),
-		"cache_hits":          hits,
-		"cache_misses":        misses,
-		"cache_stores":        s.metrics.CacheStores.Load(),
-		"cache_entries":       cacheEntries,
-		"cache_bytes":         cacheBytes,
-		"cache_hit_rate":      hitRate,
-		"response_cache_on":   st.responseCache != nil,
-		"circuits":            st.router.Snapshot(time.Now()),
+		"requests":          s.metrics.Requests.Load(),
+		"upstream_attempts": s.metrics.Attempts.Load(),
+		"fallbacks":         s.metrics.Fallbacks.Load(),
+		"errors":            s.metrics.Errors.Load(),
+		"reloads":           s.metrics.Reloads.Load(),
+		"cache_hits":        hits,
+		"cache_misses":      misses,
+		"cache_stores":      s.metrics.CacheStores.Load(),
+		"cache_entries":     cacheEntries,
+		"cache_bytes":       cacheBytes,
+		"cache_hit_rate":    hitRate,
+		"response_cache_on": st.responseCache != nil,
+		"circuits":          st.router.Snapshot(time.Now()),
 	})
 }
 
