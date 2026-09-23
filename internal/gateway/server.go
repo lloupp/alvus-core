@@ -80,14 +80,14 @@ type replayReadCloser struct {
 func (r *replayReadCloser) Close() error { return r.closer.Close() }
 
 type Server struct {
-	state        atomic.Pointer[runtimeState]
-	client       *http.Client
-	streamClient *http.Client
-	log          *slog.Logger
-	metrics      Metrics
+	state          atomic.Pointer[runtimeState]
+	client         *http.Client
+	streamClient   *http.Client
+	log            *slog.Logger
+	metrics        Metrics
 	modelMetricsMu sync.Mutex
 	modelMetrics   map[string]*modelMetric
-	mux          *http.ServeMux
+	mux            *http.ServeMux
 }
 
 func New(cfg config.Config, logger *slog.Logger) *Server {
