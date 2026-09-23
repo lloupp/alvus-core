@@ -149,6 +149,24 @@ python3 scripts/benchmark-alvus-route.py
 
 The benchmark records useful/empty HTTP 200 responses, exact prompt compliance, total latency, streaming TTFT and completion of the SSE stream. It uses the local gateway at `http://127.0.0.1:3000/v1` by default and never reads provider credentials.
 
+### Backend readiness
+
+Once the gateway is running with provider credentials already configured in its process environment, validate it as an agent backend without exposing those credentials:
+
+```bash
+python3 scripts/backend-readiness.py
+```
+
+The default `quick` mode checks health/readiness, `auto`/`fast`/`coding`/`reasoning`, OpenAI streaming, a two-turn tool call, three consecutive `auto` calls, direct Super/Ultra diagnostics, HTTP 200 empty responses, latency thresholds and per-model metrics.
+
+For the longer battery:
+
+```bash
+ALVUS_READINESS_MODE=full python3 scripts/backend-readiness.py
+```
+
+Full mode raises stability to ten `auto` calls, includes `quality`, and diagnoses the configured NVIDIA candidates directly. The harness talks only to Alvus Core; it never reads `NVIDIA_API_KEYS` or other provider credentials. It exits non-zero unless the core backend checks pass.
+
 
 ## Security
 
