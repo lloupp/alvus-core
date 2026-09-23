@@ -37,7 +37,7 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 			t.Errorf("model=%v", v["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer up.Close()
 	s := New(baseConfig(up.URL+"/v1"), nil)
@@ -141,9 +141,9 @@ func TestContentFilterCompletionDoesNotFallback(t *testing.T) {
 }
 
 func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
-	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":1}`)) }))
+	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-1"},"finish_reason":"stop"}]}`)) }))
 	defer up1.Close()
-	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":2}`)) }))
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-2"},"finish_reason":"stop"}]}`)) }))
 	defer up2.Close()
 	c1 := baseConfig(up1.URL + "/v1")
 	s := New(c1, nil)
@@ -152,12 +152,12 @@ func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
 	if err := s.Reload(bad); err == nil {
 		t.Fatal("invalid reload accepted")
 	}
-	assertSource(t, s, "1")
+	assertSource(t, s, "source-1")
 	c2 := baseConfig(up2.URL + "/v1")
 	if err := s.Reload(c2); err != nil {
 		t.Fatal(err)
 	}
-	assertSource(t, s, "2")
+	assertSource(t, s, "source-2")
 }
 
 func assertSource(t *testing.T, s *Server, want string) {
@@ -165,7 +165,7 @@ func assertSource(t *testing.T, s *Server, want string) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"a","messages":[]}`))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), `"source":`+want) {
+	if !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
