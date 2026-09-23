@@ -214,6 +214,63 @@ func TestFallbackOnEmptySuccessfulCompletion(t *testing.T) {
 	}
 }
 
+func TestRequiredToolChoiceFallsBackWhenModelReturnsText(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if call == 1 {
+			if v["model"] != "real-a" {
+				t.Errorf("first model=%v", v["model"])
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I will add 19 and 23 myself."},"finish_reason":"stop"}]}`))
+			return
+		}
+		if v["model"] != "real-b" {
+			t.Errorf("fallback model=%v", v["model"])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"add","arguments":"{\"a\":19,\"b\":23}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"Use add for 19+23"}],"tools":[{"type":"function","function":{"name":"add","parameters":{"type":"object"}}}],"tool_choice":"required"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "tool_calls") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	stats := s.modelMetricsSnapshot()
+	if stats["a"]["last_reason"] != "route_fallback" {
+		t.Fatalf("a metrics=%#v", stats["a"])
+	}
+}
+
+func TestNamedToolChoiceRequiresToolCall(t *testing.T) {
+	body := []byte(`{"tool_choice":{"type":"function","function":{"name":"add"}}}`)
+	if !requestRequiresToolCall(body) {
+		t.Fatal("named tool choice was not treated as required")
+	}
+}
+
+func TestAutoToolChoiceDoesNotRequireToolCall(t *testing.T) {
+	body := []byte(`{"tool_choice":"auto"}`)
+	if requestRequiresToolCall(body) {
+		t.Fatal("auto tool choice must allow text-only responses")
+	}
+}
+
 func TestToolCallOnlyCompletionDoesNotFallback(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

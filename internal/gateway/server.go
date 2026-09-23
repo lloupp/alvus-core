@@ -450,7 +450,7 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 			}
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				if !stream && targetPath == "/v1/chat/completions" {
-					useful, reason, probeErr := probeChatCompletion(resp)
+					useful, reason, probeErr := probeChatCompletion(resp, patched)
 					latency = time.Since(started)
 					if probeErr != nil {
 						s.recordModelAttempt(candidate.Alias, latency, resp.StatusCode, false, false, "invalid_success_response")
@@ -510,7 +510,7 @@ func (s *Server) routeRequest(st *runtimeState, original *http.Request, targetPa
 	return nil, errors.New("all routes exhausted")
 }
 
-func probeChatCompletion(resp *http.Response) (bool, string, error) {
+func probeChatCompletion(resp *http.Response, requestBody []byte) (bool, string, error) {
 	original := resp.Body
 	data, err := io.ReadAll(io.LimitReader(original, maxSemanticProbeBody+1))
 	if err != nil {
@@ -547,6 +547,12 @@ func probeChatCompletion(resp *http.Response) (bool, string, error) {
 	if choice.FinishReason == "content_filter" {
 		return true, "", nil
 	}
+	if requestRequiresToolCall(requestBody) {
+		if len(choice.Message.ToolCalls) > 0 || hasMeaningfulJSONValue(choice.Message.FunctionCall) {
+			return true, "", nil
+		}
+		return false, "required_tool_call_missing", nil
+	}
 	if hasMeaningfulContent(choice.Message.Content) ||
 		hasMeaningfulJSONValue(choice.Message.Refusal) ||
 		len(choice.Message.ToolCalls) > 0 ||
@@ -554,6 +560,34 @@ func probeChatCompletion(resp *http.Response) (bool, string, error) {
 		return true, "", nil
 	}
 	return false, "empty_success_response", nil
+}
+
+func requestRequiresToolCall(body []byte) bool {
+	var request map[string]json.RawMessage
+	if err := json.Unmarshal(body, &request); err != nil {
+		return false
+	}
+	if raw, ok := request["tool_choice"]; ok {
+		var choice string
+		if json.Unmarshal(raw, &choice) == nil {
+			return choice == "required"
+		}
+		var named map[string]any
+		if json.Unmarshal(raw, &named) == nil && len(named) > 0 {
+			return true
+		}
+	}
+	if raw, ok := request["function_call"]; ok {
+		var choice string
+		if json.Unmarshal(raw, &choice) == nil {
+			return choice != "" && choice != "auto" && choice != "none"
+		}
+		var named map[string]any
+		if json.Unmarshal(raw, &named) == nil && len(named) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMeaningfulContent(raw json.RawMessage) bool {
