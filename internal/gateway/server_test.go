@@ -37,7 +37,7 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 			t.Errorf("model=%v", v["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer up.Close()
 	s := New(baseConfig(up.URL+"/v1"), nil)
@@ -52,10 +52,102 @@ func TestFallbackOn429AndModelRewrite(t *testing.T) {
 	}
 }
 
+func TestFallbackOnEmptySuccessfulCompletion(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var v map[string]any
+		_ = json.Unmarshal(body, &v)
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if call == 1 {
+			if v["model"] != "real-a" {
+				t.Errorf("first model=%v", v["model"])
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`))
+			return
+		}
+		if v["model"] != "real-b" {
+			t.Errorf("fallback model=%v", v["model"])
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"fallback-ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "fallback-ok") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if s.metrics.Fallbacks.Load() != 1 {
+		t.Fatalf("fallbacks=%d", s.metrics.Fallbacks.Load())
+	}
+}
+
+func TestToolCallOnlyCompletionDoesNotFallback(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"add","arguments":"{\\\"a\\\":1}"}}]},"finish_reason":"tool_calls"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("unexpected fallback, calls=%d", calls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "tool_calls") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestContentFilterCompletionDoesNotFallback(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}`))
+	}))
+	defer up.Close()
+
+	s := New(baseConfig(up.URL+"/v1"), nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[]}`))
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("content filter must not trigger fallback, calls=%d", calls.Load())
+	}
+}
+
 func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
-	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":1}`)) }))
+	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-1"},"finish_reason":"stop"}]}`))
+	}))
 	defer up1.Close()
-	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"source":2}`)) }))
+	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"source-2"},"finish_reason":"stop"}]}`))
+	}))
 	defer up2.Close()
 	c1 := baseConfig(up1.URL + "/v1")
 	s := New(c1, nil)
@@ -64,12 +156,12 @@ func TestTransactionalReloadKeepsOldStateOnInvalidConfig(t *testing.T) {
 	if err := s.Reload(bad); err == nil {
 		t.Fatal("invalid reload accepted")
 	}
-	assertSource(t, s, "1")
+	assertSource(t, s, "source-1")
 	c2 := baseConfig(up2.URL + "/v1")
 	if err := s.Reload(c2); err != nil {
 		t.Fatal(err)
 	}
-	assertSource(t, s, "2")
+	assertSource(t, s, "source-2")
 }
 
 func assertSource(t *testing.T, s *Server, want string) {
@@ -77,7 +169,7 @@ func assertSource(t *testing.T, s *Server, want string) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"a","messages":[]}`))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if !strings.Contains(rec.Body.String(), `"source":`+want) {
+	if !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
